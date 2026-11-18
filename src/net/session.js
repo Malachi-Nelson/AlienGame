@@ -24,6 +24,7 @@ export class Replica {
     this.decoys = new Map(); this.players = new Map(); this.me = null;
     this.creature = { has: false, x: 0, z: 0, yaw: 0, state: 0, tgt: -1, lampsOut: false, forcing: false, speed: 0, aux: -1 };
     this.cbuf = []; this.lastEv = 0; this.result = null; this.fresh = true; this.snapT = 0; this.ai = [15, 100, 45];
+    this.zoneOff = 0;          // circuits that have tripped, one bit each; bit 5 is a blackout
   }
   tagCount() { let n = 0; for (let i = 0; i < CFG.TAGS; i++) if (this.tagBits & (1 << i)) n++; return n; }
   apply(s, now, myId, hooks) {
@@ -34,7 +35,7 @@ export class Replica {
     }
     this.time = s.t / 10; this.tagBits = s.tg; this.itemBits = s.it; this.result = s.rs || null; this.ai = s.ai;
     for (let d = 0; d < this.doorWant.length; d++) { const ch = s.dr.charCodeAt(d) - 48; this.doorWant[d] = ch ? 1 : 0; this.doorJam[d] = ch === 2 ? 1 : 0; if (this.fresh) this.doorOpen[d] = this.doorWant[d]; }
-    this.lift.state = s.lf[0]; this.lift.timer = s.lf[1] / 10; this.lift.board = s.lf[2] / 10;
+    this.lift.state = s.lf[0]; this.lift.timer = s.lf[1] / 10; this.lift.board = s.lf[2] / 10; this.zoneOff = s.zo | 0;
     this.players.clear();
     for (const id in s.pl) { const a = s.pl[id]; this.players.set(id, { id, slot: a[0], status: a[1], timer: a[2] / 10, ack: a[3], decoys: a[4], aware: a[5] / 100, tags: a[6], revProg: a[7] / 100, hidden: a[8], name: String(a[9]), ready: !!a[10], wind: a[11] | 0 }); }
     this.me = this.players.get(myId) || null;
@@ -70,6 +71,7 @@ export class Session {
     this.games = new Map();        // crews seen in this room: gid -> { h, e, ph, n, t, host }
     this.gid = null; this.epoch = 0; this.hostId = null; this.joinedAt = 0; this.lastSnap = null; this.lastSnapT = 0;
     this.acts = []; this.actSeq = 0; this.ready = false; this.paused = false;
+    this.plain = false;            // set for the headless checks: matches with nothing sealed, all power on and no incidents
     this.local = { x: 0, z: 0, yaw: 0, pitch: 0, f: 0, lk: -1, rv: -1 };
     this.acc = 0; this.lastT = performance.now(); this.sendT = 0;
     const hash = (location.hash || '').replace(/^#/, '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12);
@@ -88,8 +90,9 @@ export class Session {
   solo() {
     this.quit(); this.mode = 'solo'; this.world = new World(this.L, (Math.random() * 2 ** 31) | 0); this.rep = new Replica(this.L);
     this.world.addPlayer(this.id, this.name, true); this.acts = []; this.acc = 0; this.paused = false;
-    this.world.startMatch(((Math.random() * 2 ** 31) | 0) + 1);
+    this.world.startMatch(this.newSeed());
   }
+  newSeed() { const s = ((Math.random() * 2 ** 31) | 0) + 1; return this.plain ? -s : s; }
   host() {
     this.quit(); this.mode = 'host'; this.gid = Math.random().toString(36).slice(2, 8); this.epoch = 1; this.hostId = this.id;
     this.world = new World(this.L, (Math.random() * 2 ** 31) | 0); this.rep = new Replica(this.L); this.world.addPlayer(this.id, this.name, true); this.acts = []; this.acc = 0; this.paused = false;
@@ -100,7 +103,7 @@ export class Session {
     this.joinedAt = performance.now(); this.lastSnap = null; this.lastSnapT = this.joinedAt; this.acts = []; this.ready = false; this.sendT = 0;
     return true;
   }
-  start() { if (this.hosting && this.world.phase !== PH.PLAY) this.world.startMatch(((Math.random() * 2 ** 31) | 0) + 1); }
+  start() { if (this.hosting && this.world.phase !== PH.PLAY) this.world.startMatch(this.newSeed()); }
   quit() { this.world = null; this.gid = null; this.hostId = null; this.lastSnap = null; this.paused = false; }
   leave() { const was = this.mode; this.quit(); this.mode = 'menu'; this.rep = new Replica(this.L); if (was !== 'solo' && this.relay) { this.sendT = 0; this.publish(); } }
   // Ask the host for something: 'T' take tag, 'I' take sounder, 'D' door, 'G' throw, 'L' call the lift. It is repeated until answered.
@@ -178,7 +181,7 @@ export class Session {
   }
   okSnap(d) {
     return num(d.e) && num(d.ph) && num(d.mid) && num(d.sd) && num(d.t) && Array.isArray(d.c) && d.c.length >= 8 && d.c.every(num) && typeof d.dr === 'string' && d.dr.length === this.L.doors.length
-      && num(d.tg) && num(d.it) && Array.isArray(d.lf) && d.lf.length >= 3 && Array.isArray(d.dc) && Array.isArray(d.ev) && Array.isArray(d.ai) && d.pl && typeof d.pl === 'object' && Object.keys(d.pl).length <= CFG.MAX_PLAYERS && Object.values(d.pl).every(a => Array.isArray(a) && a.length >= 10);
+      && num(d.tg) && num(d.it) && (d.zo === undefined || num(d.zo)) && Array.isArray(d.lf) && d.lf.length >= 3 && Array.isArray(d.dc) && Array.isArray(d.ev) && Array.isArray(d.ai) && d.pl && typeof d.pl === 'object' && Object.keys(d.pl).length <= CFG.MAX_PLAYERS && Object.values(d.pl).every(a => Array.isArray(a) && a.length >= 10);
   }
   dropPeer(id) { if (!this.peers.delete(id)) return; if (this.mode === 'host' && this.world && this.world.players.has(id)) this.world.removePlayer(id); if (this.hooks.onNet) this.hooks.onNet(); }
 

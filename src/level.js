@@ -14,6 +14,13 @@ const LIGHT = {
   violet: [0.72, 0.32, 1.0], cyan: [0.35, 0.78, 1.0], warm: [1.0, 0.84, 0.62],
 };
 
+// The outpost's five power circuits. Each match some of them may be dead or failing, and one can trip while you are in it.
+export const ZONES = ['west wing', 'ring', 'south wing', 'north wing', 'east wing'];
+const zoneOfRoom = n => /^(Dock|Comms|North Corridor|North Link|West Tunnel|Quarters Passage)/.test(n) ? 0
+  : /^(Quarters|Cabin|Washroom|Mess|Med Bay|Service)/.test(n) ? 2
+  : /^(Hydro|Lab|Core Lab)/.test(n) ? 3
+  : /^(East Corridor|Drill|Generator|East Tunnel)/.test(n) ? 4 : 1;
+
 export const CREW_LOGS = [
   ['T. Halvorsen', 'Station chief', 'The drill broke through at 3,912 metres. The water under the ice is warm.'],
   ['M. Adeyemi', 'Drilling', 'Something came up the bore with the core barrel. We logged it as mineral. Then it unfolded.'],
@@ -40,7 +47,7 @@ export function buildLevel() {
 
   function R(name, x0, z0, x1, z1, o = {}) {
     const id = rooms.length;
-    rooms.push({ id, name, x0, z0, x1, z1, kind: o.kind || 'room', ice: !!o.ice });
+    rooms.push({ id, name, x0, z0, x1, z1, kind: o.kind || 'room', ice: !!o.ice, zone: zoneOfRoom(name) });
     for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
       const i = idx(x, z);
       if (cells[i] === C.SOLID) cells[i] = C.FLOOR;
@@ -286,8 +293,14 @@ export function buildLevel() {
 
   for (const l of lights) if (l.y < 0) l.y = l.y === -1 ? ceil[idx(l.cx, l.cz)] - 0.25 : l.y;
 
+  // which power circuit each tile is on: its room's, or for a doorway, duct or fitting, the nearest room's
+  const zoneOf = new Uint8Array(W * H).fill(255);
+  { const q = []; for (let i = 0; i < W * H; i++) if (roomId[i] >= 0) { zoneOf[i] = rooms[roomId[i]].zone; q.push(i); }
+    for (let h = 0; h < q.length; h++) { const c = q[h], x = c % W, z = (c / W) | 0; for (const [dx, dz] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) { const nx = x + dx, nz = z + dz; if (nx < 0 || nz < 0 || nx >= W || nz >= H) continue; const n = idx(nx, nz); if (zoneOf[n] === 255) { zoneOf[n] = zoneOf[c]; q.push(n); } } } }
+  for (const l of lights) l.zone = zoneOf[idx(l.cx, l.cz)];
+
   const L = {
-    T, W, H, cells, ceil, ice, roomId, rooms, propKind, doors, doorAt, lockers, lockerAt, ducts, ductOf, lights, tagSpots, itemSpots, spawns, creatureSpawns, lift,
+    T, W, H, cells, ceil, ice, roomId, rooms, propKind, doors, doorAt, lockers, lockerAt, ducts, ductOf, lights, tagSpots, itemSpots, spawns, creatureSpawns, lift, zoneOf,
     idx, cellOf: (x, z) => (Math.floor(z / T) * W + Math.floor(x / T)),
     cx: i => (i % W + 0.5) * T, cz: i => (((i / W) | 0) + 0.5) * T,
   };
@@ -344,9 +357,10 @@ export function staticClear(L, x0, z0, x1, z1) {
   return true;
 }
 
-// Light arriving at a point with a given facing. Returns [r, g, b, flickerR, flickerG, flickerB]: steady light and the share from failing fixtures.
+// Light arriving at a point with a given facing. Returns [r, g, b, flickerR, flickerG, flickerB, then how much comes from each of
+// the five power circuits]: steady light, the share from failing fixtures, and what would be lost if a circuit went down.
 export function lightAt(L, x, y, z, nx, ny, nz) {
-  const out = [0, 0, 0, 0, 0, 0];
+  const out = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   const px = x + nx * 0.06, pz = z + nz * 0.06;
   for (const l of L.lights) {
     const dx = l.x - px, dy = l.y - y, dz = l.z - pz, d2 = dx * dx + dy * dy + dz * dz;
@@ -357,6 +371,7 @@ export function lightAt(L, x, y, z, nx, ny, nz) {
     const e = l.I * (0.28 + 0.72 * ndl) / (1 + 0.25 * Math.max(d2, 0.4));
     const o = l.flicker ? 3 : 0;
     out[o] += e * l.r; out[o + 1] += e * l.g; out[o + 2] += e * l.b;
+    out[6 + l.zone] += e * (0.3 * l.r + 0.6 * l.g + 0.1 * l.b);
   }
   return out;
 }

@@ -46,6 +46,44 @@ Things worth knowing:
   hunting. Sometimes it puts them out and waits.
 - It cannot fit in the service ducts. It can reach a little way in, and it knows where they come out.
 - Playing alone, the first time it brings you down you get back up. There is no second time.
+- The lights stutter when it is within about fourteen metres, and your own lamp catches when it is closer still.
+
+## No two matches are alike
+
+Each match is laid out from one random number, which every player's browser works out the same way.
+
+- **Tags and sounders.** Eight of twenty-three possible tag spots, and five to nine sounders lying about.
+- **Sealed doors.** Three to six doors are welded shut, barred across and showing a red lamp. The schematic marks them
+  in red. Nothing is ever cut off, but the way you went last time may not be there.
+- **Power.** The outpost has five circuits: the west wing, the ring, the south wing, the north wing and the east wing.
+  Most matches one of them is dead or failing, sometimes two. A dead wing is dark apart from screens and indicator
+  lamps. The dark hides you from the creature unless your lamp is on. The schematic shades a wing with no power.
+- **The creature.** There are six kinds and you are not told which one you have until the match is over. One hears
+  further and sees less, one is the other way round, one waits in the dark far more, one is faster in a straight line
+  and worse at corners, one opens lockers from the start and guards the tags. The end card says which it was.
+- **Timing.** How long it sleeps before it starts to move, and how long the lift takes to arrive, both change.
+
+Things also go wrong while you are in there, at no fixed time:
+
+- **A circuit trips**, usually the one someone is standing in, and comes back by itself half a minute later.
+- **A blackout** takes every circuit for a quarter of a minute.
+- **A door fault** opens or shuts a few doors near someone. The creature does not come for the noise.
+- **The borehole shifts.** For about seven seconds the rumble covers everything and the creature hears half as far.
+  That is the time to run.
+
+## Scares
+
+- When it catches you the view is taken from you for a second and turned to face it.
+- Now and then someone in a suit is standing at the far end of a corridor. Look straight at them, or walk up, and
+  they are gone. Only you see them.
+- The suit radio picks up fragments of whoever is still transmitting.
+- The outpost knocks, cracks and groans, and occasionally something happens close by: a locker is struck from
+  inside, something scuttles off down a duct, a light tube gives out overhead.
+
+None of this ever looks or sounds like the creature. The tapping is always its feet and the static is always how
+close it is. **Sudden scares and stuttering lights**, on the title card and the pause card, switches off the figures,
+the close-by noises and the flash when you are caught, and makes lights go down and come up smoothly instead of
+stuttering. Switch it off if flashing light is a problem for you. The creature is just as dangerous with it off.
 
 ## Co-op
 
@@ -82,21 +120,25 @@ Needs Node 20 or newer.
 
 ```sh
 npm install
-npm test                 # the simulation tests: the map, the rules, each of the creature's habits
+npm test                 # the simulation tests: the map, the rules, the match set-up, each of the creature's habits
 npm run build            # writes dist/index.html, dist/game.js and dist/mqtt.min.js
 npm run dev              # the same, served on http://localhost:8123 and rebuilt when a file changes
 npm run map              # prints the outpost as text and checks it
 node tools/soak.mjs 3 6  # plays six whole matches with three stand-in players and prints what the creature did
+PLAIN=1 node tools/soak.mjs 3 6   # the same in plain matches: nothing sealed, all power on, the ordinary creature
 ```
 
 A few checks drive the built page in a headless browser. They need Playwright, Chrome and a local stand-in for the
-relays, none of which are in `package.json`:
+relays, none of which are in `package.json`. Apart from the two that say otherwise they play plain matches (`?plain` on
+the address: nothing sealed, all power on, no incidents), so that they can rely on the map:
 
 ```sh
 npm i --no-save playwright-core aedes ws
 node tools/check-solo.mjs     # one player: walking, doors, a tag, a locker, meeting the creature, the lift
 node tools/check-coop.mjs     # three players: lobby, a match, going down, the leader leaving mid-match
 node tools/check-touch.mjs    # a phone-sized touch screen: the stick, the buttons, arranging them; and rebinding keys
+node tools/check-scares.mjs   # a varied match: sealed doors, power going and coming back, a figure, being caught
+node tools/check-coop-varied.mjs   # two players in a varied match: same set-up for both, and the second player's side of it
 node tools/check-audio.mjs    # renders every sound offline and prints how loud each one comes out
 ```
 
@@ -105,18 +147,20 @@ node tools/check-audio.mjs    # renders every sound offline and prints how loud 
 Every push to `main` runs the tests, builds the page and puts `dist/` on the `gh-pages` branch
 (`.github/workflows/ci.yml`). GitHub Pages serves that branch at the address above.
 
-If a change alters what players send each other, build with a new protocol name (`PROTO=v2 npm run build`, and set
-the same in the workflow) so that old tabs and new ones do not end up in the same room.
+If a change alters what players send each other, or how a match is laid out from its seed, change the protocol name
+(`v2` at present, in `src/config.js` and `tools/build.mjs`) so that old tabs and new ones do not end up in the same room.
 
 ## Layout
 
 ```
 src/level.js          the outpost: every room, door, locker, duct and light, as data
 src/nav.js            sight lines, path finding, collision
-src/sim/              the match as the host runs it: world.js (rules), creature.js (the AI)
+src/sim/              the match as the host runs it: world.js (rules, what differs from match to match, incidents),
+                      creature.js (the AI), defs.js (shared names, the six kinds of creature)
 src/net/              relay.js (the public relays), session.js (host, client, taking over as host)
 src/client/           what you see and hear: scene, creature model, other players, sound, HUD, the local player,
-                      controls.js (actions and key bindings), touch.js (the phone controls)
+                      controls.js (actions and key bindings), touch.js (the phone controls),
+                      scares.js (the lights' behaviour, figures that are not there, the radio, noises)
 src/main.js           ties it together
 test/                 node:test suites
 tools/                build, map printer, soak, headless checks

@@ -1,6 +1,6 @@
 // Every number that shapes how the game plays, in one place.
 export const CFG = {
-  PROTO: typeof __PROTO__ === 'string' ? __PROTO__ : 'v1',     // set at build time; change it when players' messages change shape, so old and new tabs do not meet
+  PROTO: typeof __PROTO__ === 'string' ? __PROTO__ : 'v2',     // set at build time; change it when players' messages change shape, so old and new tabs do not meet
   MAX_PLAYERS: 6,
   TAGS: 8,                   // crew tags to recover
   ITEMS: 7,                  // sounders lying around the outpost

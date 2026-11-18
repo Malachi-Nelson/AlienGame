@@ -8,12 +8,14 @@ export class Bot {
     this.w = world; this.L = world.L; this.id = id;
     this.p = world.addPlayer(id, name, true);
     this.x = this.p.x; this.z = this.p.z; this.yaw = 0;
-    this.pather = new Pather(this.L, this.L.walkP);
+    this.walk = this.L.walkP.slice(); this.mid = -1;          // where it can go this match: it knows which doors are sealed, as a player would from the schematic
+    this.pather = new Pather(this.L, this.walk);
     this.path = null; this.pi = 0; this.speed = 2.6; this.crouch = false; this.light = false; this.scan = false; this.lk = -1; this.rv = -1;
     this.acts = []; this.seq = 0;
   }
   act(type, ...args) { this.acts.push([++this.seq, type, ...args]); }
-  goTo(cell) { this.path = this.pather.find(this.L.cellOf(this.x, this.z), cell, null, 0); this.pi = 0; return !!this.path; }
+  sync() { const w = this.w, L = this.L; if (this.mid === w.mid) return; this.mid = w.mid; for (let i = 0; i < this.walk.length; i++) { const d = L.doorAt[i]; this.walk[i] = L.walkP[i] && !(d >= 0 && w.doorSeal[d]) ? 1 : 0; } }
+  goTo(cell) { this.sync(); this.path = this.pather.find(this.L.cellOf(this.x, this.z), cell, null, 0); this.pi = 0; return !!this.path; }
   goToXZ(cx, cz) { return this.goTo(this.L.idx(cx, cz)); }
   get arrived() { return !this.path; }
   tick(dt) {

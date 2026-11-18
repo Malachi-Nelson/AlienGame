@@ -37,7 +37,7 @@ export async function openGame(browser, url, { relay, name, size = [1280, 720], 
   page.on('console', m => { if (m.type() === 'error' && !/favicon|GPU stall|404/.test(m.text())) errors.push(m.text().slice(0, 300)); });
   page.on('pageerror', e => errors.push('pageerror: ' + e.message + '\n' + (e.stack || '').split('\n').slice(0, 4).join('\n')));
   await page.addInitScript(([r, n]) => { window.MQ_SERVERS = r ? [r] : ['ws://localhost:9']; try { localStorage.setItem('los-settings', JSON.stringify({ name: n || 'Tester', sens: 1, vol: 0.5, q: 'low' })); } catch (e) {} }, [relay || '', name || '']);
-  await page.goto(url + 'index.html?' + query);
+  await page.goto(url + 'index.html?' + (/(^|&)varied(&|$)/.test(query) ? query.replace(/(^|&)varied(?=&|$)/, '') : query + '&plain'));      // plain: nothing sealed, all power on, no incidents, so a check can rely on the map
   await page.waitForFunction('window.__los && document.getElementById("m-solo")', null, { timeout: 60000 });
   return { page, ctx, errors, shot: n => page.screenshot({ path: join(out, n + '.png') }) };
 }

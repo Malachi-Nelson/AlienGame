@@ -1,5 +1,5 @@
 // Everything drawn over the 3D view: the menus, the lobby, and the read-outs inside the suit.
-import { T, W, H, C } from '../level.js';
+import { T, W, H, C, ZONES } from '../level.js';
 import { CFG } from '../config.js';
 import { ST, LIFT } from '../sim/defs.js';
 import { SLOT_COLORS } from './avatars.js';
@@ -33,6 +33,7 @@ export class Hud {
       $(p + '-vol').addEventListener('input', e => on.setting('vol', +e.target.value));
       $(p + '-bri').addEventListener('input', e => on.setting('bri', +e.target.value));
       $(p + '-q').addEventListener('change', e => on.setting('q', e.target.value));
+      $(p + '-scare').addEventListener('change', e => on.setting('scares', e.target.checked));
     }
     const tags = $('h-tags'); for (let i = 0; i < CFG.TAGS; i++) tags.appendChild(document.createElement('i'));
     this.mapCtx = $('h-map').getContext('2d'); this.mapBase = null;
@@ -49,7 +50,7 @@ export class Hud {
     for (const c of document.querySelectorAll('#overlay .card')) c.hidden = c.dataset.screen !== name;
     $('overlay').hidden = !name; $('overlay').classList.toggle('clear', name === 'click');
   }
-  setSettings(s) { for (const p of ['s', 'p']) { $(p + '-sens').value = s.sens; $(p + '-vol').value = s.vol; $(p + '-bri').value = s.bri; $(p + '-q').value = s.q; } if (document.activeElement !== $('m-name')) $('m-name').value = s.name || ''; }
+  setSettings(s) { for (const p of ['s', 'p']) { $(p + '-sens').value = s.sens; $(p + '-vol').value = s.vol; $(p + '-bri').value = s.bri; $(p + '-q').value = s.q; $(p + '-scare').checked = s.scares !== false; } if (document.activeElement !== $('m-name')) $('m-name').value = s.name || ''; }
   setLink(url, priv) { $('m-link').value = url; $('l-link').value = url; $('m-priv').textContent = priv ? 'Back to the public room' : 'Make a private room'; }
   setBuild(b) { $('m-build').textContent = b; }
   setNet(text, level, canHost, joinLabel) {
@@ -64,7 +65,8 @@ export class Hud {
     const waiting = players.filter(p => !p.host && !p.ready).length;
     this.text('l-text', isHost ? (players.length === 1 ? 'Nobody else has joined yet. You can start alone, or wait.' : waiting ? `Waiting on ${waiting} of the crew. You can start anyway.` : 'Everyone is ready.') : 'Waiting for the crew leader to start.');
   }
-  setEnd(o) { this.text('e-eyebrow', o.eyebrow); this.text('e-title', o.title); this.text('e-text', o.text); $('e-stats').innerHTML = o.stats.map(([v, k]) => `<div><b>${esc(v)}</b><span>${esc(k)}</span></div>`).join(''); this.text('e-again', o.again); this.show('e-again', !!o.again); }
+  setEnd(o) { this.text('e-eyebrow', o.eyebrow); this.text('e-title', o.title); this.text('e-text', o.text); $('e-stats').innerHTML = o.stats.map(([v, k]) => `<div><b>${esc(v)}</b><span>${esc(k)}</span></div>`).join(''); this.text('e-again', o.again); this.show('e-again', !!o.again);
+    const x = o.extra, e = $('e-extra'); e.hidden = !x; if (x) { e.querySelector('i').textContent = x.head; e.querySelector('b').textContent = x.name; e.querySelector('span').textContent = x.line; e.querySelector('em').textContent = x.cond; } }
   setPause(solo) { this.text('p-text', solo ? 'The outpost waits while this is open.' : 'The match carries on without you while this is open.'); }
 
   // keyboard or touch: what the prompts and the key list on the title card say, and where the read-outs sit
@@ -93,7 +95,7 @@ export class Hud {
   notice(text) { const n = $('notice'); n.textContent = text; n.hidden = false; this.noticeT = 5; }
   banner(text, secs = 4, kind = '') { const b = $('h-banner'); b.textContent = text; b.className = 'on ' + kind; this.bannerT = secs; }
   log(name, role, text) { const l = $('h-log'); l.querySelector('b').textContent = `${name} · ${role}`; l.querySelector('span').textContent = '"' + text + '"'; l.classList.add('on'); this.logT = 8; }
-  feed(text) { const f = $('h-feed'), d = document.createElement('div'); d.textContent = text; f.appendChild(d); while (f.children.length > 5) f.removeChild(f.firstChild); setTimeout(() => d.remove(), 6200); }
+  feed(text, kind) { const f = $('h-feed'), d = document.createElement('div'); d.textContent = text; if (kind) d.className = kind; f.appendChild(d); while (f.children.length > 5) f.removeChild(f.firstChild); setTimeout(() => d.remove(), 6200); }
 
   // v: everything the read-outs need this frame
   update(dt, v) {
@@ -145,8 +147,12 @@ export class Hud {
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = '#05090b'; ctx.fillRect(0, 0, cv.width, cv.height);
     ctx.setTransform(zoom, 0, 0, zoom, -ox * zoom, -oy * zoom);
     ctx.drawImage(this.mapBase, 0, 0, cv.width, cv.height);
+    // what is different this match: wings with no power are shaded, and doors that are sealed shut are marked in red
+    if (v.dark) { ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'; for (const r of L.rooms) if (v.dark[r.zone] < 0.5) ctx.fillRect(r.x0 * s, r.z0 * s, (r.x1 - r.x0 + 1) * s + 0.5, (r.z1 - r.z0 + 1) * s + 0.5); }
+    if (v.sealed) { for (const id of v.sealed) for (const i of L.doors[id].cells) { const x = (i % W) * s, y = ((i / W) | 0) * s; ctx.fillStyle = '#ff4630'; ctx.fillRect(x + s * 0.08, y + s * 0.08, s * 0.84, s * 0.84); ctx.strokeStyle = '#2a0703'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x + s * 0.2, y + s * 0.2); ctx.lineTo(x + s * 0.8, y + s * 0.8); ctx.moveTo(x + s * 0.8, y + s * 0.2); ctx.lineTo(x + s * 0.2, y + s * 0.8); ctx.stroke(); } }
     for (const p of v.mapPlayers) { ctx.fillStyle = SLOT_COLORS[p.slot % SLOT_COLORS.length]; ctx.globalAlpha = p.status === ST.ALIVE ? 1 : 0.5; ctx.beginPath(); ctx.arc(p.x / T * s, p.z / T * s, p.me ? 5 : 4, 0, 7); ctx.fill(); if (p.me) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(p.x / T * s, p.z / T * s); ctx.lineTo(p.x / T * s - Math.sin(p.yaw) * 11, p.z / T * s - Math.cos(p.yaw) * 11); ctx.stroke(); } }
     ctx.globalAlpha = 1; ctx.setTransform(1, 0, 0, 1, 0, 0);
-    this.set('h-mapnote', 't', zoom > 1 ? 'The part of the outpost around you. You are the bright dot; the creature is not shown.' : 'You are the bright dot. The schematic does not show the creature.', (e, t) => (e.textContent = t));
+    const marks = (v.sealed && v.sealed.length ? ' Red: sealed doors.' : '') + (v.dark && Array.from(v.dark).some(p => p < 0.5) ? ' Shaded: no power.' : '');
+    this.set('h-mapnote', 't', (zoom > 1 ? 'The part of the outpost around you. You are the bright dot; the creature is not shown.' : 'You are the bright dot. The schematic does not show the creature.') + marks, (e, t) => (e.textContent = t));
   }
 }

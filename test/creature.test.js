@@ -11,7 +11,7 @@ const L = buildLevel();
 const at = (cx, cz) => ({ x: (cx + 0.5) * T, z: (cz + 0.5) * T });
 function setup(n = 1, seed = 11) {
   const w = new World(L, seed), bots = []; for (let i = 0; i < n; i++) bots.push(new Bot(w, 'p' + i, 'P' + i));
-  w.startMatch(4242); w.time = CFG.WAKE + 1; w.creature.state = CS.ROAM; w.doorWant.fill(1); w.doorOpen.fill(1); w.doorWant[L.lift.gateId] = 0; w.doorOpen[L.lift.gateId] = 0;
+  w.startMatch(-4242); w.time = CFG.WAKE + 1; w.creature.state = CS.ROAM; w.doorWant.fill(1); w.doorOpen.fill(1); w.doorWant[L.lift.gateId] = 0; w.doorOpen[L.lift.gateId] = 0;
   return { w, c: w.creature, bots };
 }
 const place = (c, cx, cz, yaw = 0) => { const p = at(cx, cz); c.x = p.x; c.z = p.z; c.yaw = yaw; c.path = null; c.pauseT = 0; };

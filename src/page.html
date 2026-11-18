@@ -57,10 +57,11 @@
     <div class="row link"><input id="m-link" readonly aria-label="Link to this room"><button id="m-copy" type="button">Copy link</button><button id="m-priv" type="button">Make a private room</button></div>
     <dl class="keys" id="m-keys"></dl>
     <div class="row set">
-      <label for="s-sens">Mouse</label><input id="s-sens" type="range" min="0.3" max="3" step="0.1" value="1">
-      <label for="s-vol">Volume</label><input id="s-vol" type="range" min="0" max="1" step="0.05" value="0.8">
-      <label for="s-bri">Brightness</label><input id="s-bri" type="range" min="0.6" max="2" step="0.05" value="1">
-      <label for="s-q">Detail</label><select id="s-q"><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
+      <span class="pair"><label for="s-sens">Mouse</label><input id="s-sens" type="range" min="0.3" max="3" step="0.1" value="1"></span>
+      <span class="pair"><label for="s-vol">Volume</label><input id="s-vol" type="range" min="0" max="1" step="0.05" value="0.8"></span>
+      <span class="pair"><label for="s-bri">Brightness</label><input id="s-bri" type="range" min="0.6" max="2" step="0.05" value="1"></span>
+      <span class="pair"><label for="s-q">Detail</label><select id="s-q"><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></span>
+      <label class="check" title="Figures that are not there, sudden noises close by, the flash when you are caught, and lights that stutter. The creature is just as dangerous with this off."><input type="checkbox" id="s-scare" checked> Sudden scares and stuttering lights</label>
       <button id="m-controls" type="button">Controls</button>
     </div>
     <p class="note"><span id="m-needs">Keyboard and mouse, or a phone or tablet held sideways.</span> Sounds much better with headphones. Everyone who opens this page is in the same public room; a private room gives you a link for just your group. <span id="m-build"></span></p>
@@ -81,10 +82,11 @@
     <p class="lede" id="p-text">The match carries on without you while this is open.</p>
     <div class="row btns"><button id="p-resume" type="button" class="primary">Back in</button><button id="p-controls" type="button">Controls</button><button id="p-leave" type="button">Leave the match</button></div>
     <div class="row set">
-      <label for="p-sens">Mouse</label><input id="p-sens" type="range" min="0.3" max="3" step="0.1" value="1">
-      <label for="p-vol">Volume</label><input id="p-vol" type="range" min="0" max="1" step="0.05" value="0.8">
-      <label for="p-bri">Brightness</label><input id="p-bri" type="range" min="0.6" max="2" step="0.05" value="1">
-      <label for="p-q">Detail</label><select id="p-q"><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
+      <span class="pair"><label for="p-sens">Mouse</label><input id="p-sens" type="range" min="0.3" max="3" step="0.1" value="1"></span>
+      <span class="pair"><label for="p-vol">Volume</label><input id="p-vol" type="range" min="0" max="1" step="0.05" value="0.8"></span>
+      <span class="pair"><label for="p-bri">Brightness</label><input id="p-bri" type="range" min="0.6" max="2" step="0.05" value="1"></span>
+      <span class="pair"><label for="p-q">Detail</label><select id="p-q"><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></span>
+      <label class="check" title="Figures that are not there, sudden noises close by, the flash when you are caught, and lights that stutter. The creature is just as dangerous with this off."><input type="checkbox" id="p-scare" checked> Sudden scares and stuttering lights</label>
     </div>
   </div>
 
@@ -93,6 +95,7 @@
     <h2 id="e-title"></h2>
     <p class="lede" id="e-text"></p>
     <div class="stats" id="e-stats"></div>
+    <div class="extra" id="e-extra" hidden><i></i><b></b><span></span><em></em></div>
     <div class="row btns"><button id="e-again" type="button" class="primary">Again</button><button id="e-leave" type="button">Main menu</button></div>
   </div>
 

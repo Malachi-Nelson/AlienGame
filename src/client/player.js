@@ -112,9 +112,11 @@ export class LocalPlayer {
       rep.layout.items.forEach((t, i) => { if (!(rep.itemBits & (1 << i))) tryIt(t.x, t.z, CFG.reach, 0.5, () => ({ kind: 'item', i, text: rep.me && rep.me.decoys >= CFG.MAX_SOUNDERS ? 'Sounder (you are carrying three)' : 'Take sounder', dead: rep.me && rep.me.decoys >= CFG.MAX_SOUNDERS })); });
     }
     for (const o of others) if (o.status === ST.DOWN) tryIt(o.x, o.z, CFG.down.reach - 0.2, 0.2, () => ({ kind: 'revive', slot: o.slot, text: 'Hold to pick up ' + o.name, hold: true }));
+    const sealed = rep.layout ? rep.layout.sealed : null;
     for (const d of L.doors) {
       if (d.gate) continue;
-      tryIt(d.x, d.z, CFG.reach + 0.5 + (d.len > 2 ? 0.9 : 0), 0.6, () => rep.doorJam[d.id] ? { kind: 'none', text: 'Door forced. It will not move', dead: true } : { kind: 'door', i: d.id, text: rep.doorWant[d.id] ? 'Shut door' : 'Open door' });
+      tryIt(d.x, d.z, CFG.reach + 0.5 + (d.len > 2 ? 0.9 : 0), 0.6, () => sealed && sealed.includes(d.id) ? { kind: 'none', text: 'Sealed shut. Find another way round', dead: true }
+        : rep.doorJam[d.id] ? { kind: 'none', text: 'Door forced. It will not move', dead: true } : { kind: 'door', i: d.id, text: rep.doorWant[d.id] ? 'Shut door' : 'Open door' });
     }
     for (const k of L.lockers) {
       const occ = others.some(o => o.hidden === k.id);

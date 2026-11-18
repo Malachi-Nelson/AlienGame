@@ -22,16 +22,15 @@ const NONE = [];
 export class Creature {
   constructor(world) {
     this.w = world; const L = this.L = world.L;
-    this.pather = new Pather(L, L.walkC);
+    this.walk = L.walkC.slice();                 // where it can stand this match: the floor, less any doorway that has been welded shut
+    this.pather = new Pather(L, this.walk);
     this.occ = new Float32Array(N); this.occ2 = new Float32Array(N);
     this.lockerOcc = new Float32Array(L.lockers.length); this.lockerChecked = new Uint8Array(L.lockers.length);
     this.dist = new Int16Array(N);
     this.poiSeen = new Float32Array(L.pois.length);
     this.heat = new Float32Array(L.rooms.length);
     this.aware = new Map(); this.seenAt = new Map(); this.decoyCall = new Map();
-    // where prey can be without being in plain view: any floor or duct, but not the lift shaft
     this.spread = new Uint8Array(N);
-    for (let i = 0; i < N; i++) this.spread[i] = L.walkP[i] && L.cells[i] !== C.LIFT && !(L.doorAt[i] >= 0 && L.doors[L.doorAt[i]].gate) ? 1 : 0;
     this.lockersAt = new Map();
     for (const k of L.lockers) { if (!this.lockersAt.has(k.access)) this.lockersAt.set(k.access, []); this.lockersAt.get(k.access).push(k.id); }
     this.genRoom = L.rooms.findIndex(r => r.name === 'Generator Hall');
@@ -40,7 +39,15 @@ export class Creature {
   }
 
   reset(cell) {
-    const L = this.L;
+    const L = this.L, w = this.w;
+    // what kind of creature this match has, and where it and its prey can go
+    this.tr = Object.assign({ hear: 1, sight: 1, cone: 0.25, ambush: 1, roam: 1, chase: 0, corner: 0.35, search: 1, hide0: 0.15, guard: 0 }, w.trait);
+    for (let i = 0; i < N; i++) {
+      const d = L.doorAt[i], shut = d >= 0 && w.doorSeal[d];
+      this.walk[i] = L.walkC[i] && !shut ? 1 : 0;
+      // where prey can be without being in plain view: any floor or duct, but not the lift shaft
+      this.spread[i] = L.walkP[i] && !shut && L.cells[i] !== C.LIFT && !(d >= 0 && L.doors[d].gate) ? 1 : 0;
+    }
     this.x = L.cx(cell); this.z = L.cz(cell); this.yaw = 0; this.vx = this.vz = this.speed = 0;
     this.state = CS.IDLE; this.stateT = 0;
     this.path = null; this.pathI = 0;
@@ -55,7 +62,7 @@ export class Creature {
     this.baitT = 0; this.baitFor = null; this.ambushT = 0;
     this.pressure = 0; this.backoff = 0; this.quiet = 0; this.hint = null; this.klaxT = 0;
     this.aware.clear(); this.seenAt.clear(); this.decoyCall.clear(); this.poiSeen.fill(-60); this.heat.fill(0);
-    this.learn.hide = 0.15; this.learn.decoy = 1; this.learn.duct = 0.45;
+    this.learn.hide = this.tr.hide0; this.learn.decoy = 1; this.learn.duct = 0.45;
     this.stats = { hunts: 0, catches: 0, lockerChecks: 0, lockerFinds: 0, searches: 0 };
   }
 
@@ -70,7 +77,7 @@ export class Creature {
   update(dt) {
     const w = this.w;
     this.stateT += dt;
-    if (this.state === CS.IDLE) { this.stop(dt); w.noises.length = 0; if (w.time > CFG.WAKE) this.enter(CS.ROAM); return; }
+    if (this.state === CS.IDLE) { this.stop(dt); w.noises.length = 0; if (w.time > w.wake) { this.enter(CS.ROAM); w.event('wake'); } return; }
     this.sense(dt);
     for (const n of w.noises) this.hear(n);
     w.noises.length = 0;
@@ -105,15 +112,15 @@ export class Creature {
       const dx = p.x - this.x, dz = p.z - this.z, d = Math.hypot(dx, dz);
       if (p.hidden < 0 && p.invuln <= 0) {
         const pc = L.cellOf(p.x, p.z), inDuct = L.cells[pc] === C.DUCT;
-        const range = p.light ? CFG.creature.sightLamp : CFG.creature.sight;
+        const range = (p.light ? CFG.creature.sightLamp : CFG.creature.sight) * this.tr.sight;
         if (!inDuct && d < range) {
           const dot = d > 0.01 ? (dx * fx + dz * fz) / d : 1;
-          if (dot > (alert ? -0.25 : 0.25) || d < 2.2) {
+          if (dot > (alert ? -0.25 : this.tr.cone) || d < 2.2) {
             if (sight(L, w.doorOpen, this.x, this.z, EYE, p.x, p.z, p.crouch ? 0.9 : 1.6)) {
               vis = true;
               const near = clamp01(1 - (d - 2) / (range - 2));
               rate = 0.3 + 3.7 * near * near;
-              rate *= p.light ? 2.5 : 0.3 + 0.7 * L.lightLevel[pc];           // darkness hides; a lit lamp does the opposite
+              rate *= p.light ? 2.5 : 0.3 + 0.7 * w.litAt(pc);                // darkness hides; a lit lamp does the opposite
               rate *= p.speed > 3.7 ? 1.6 : p.speed > 0.4 ? 1 : 0.6;          // movement catches the eye
               if (p.crouch) rate *= 0.6;
               if (dot < 0.75) rate *= 0.6;                                     // the edge of its view
@@ -140,7 +147,8 @@ export class Creature {
       if (this.state === CS.SEARCH) { this.seedOcc(ex, ez, 0.6, 3); if (d < 16) return; }
       this.investigate(ex, ez, 0.6, 'klaxon', 0); return;
     }
-    let R = n.r * (this.state === CS.BAIT ? 1.6 : this.state === CS.AMBUSH ? 1.3 : 1);
+    let R = n.r * this.tr.hear * (this.state === CS.BAIT ? 1.6 : this.state === CS.AMBUSH ? 1.3 : 1);
+    if (w.rumbleT > 0) R *= 0.5;                        // the borehole is shifting: nothing carries far over that
     if (this.inGen(n.x, n.z)) R *= 0.6;                 // the generators drown things out
     if (this.inGen(this.x, this.z)) R *= 0.75;
     if (d > R) return;
@@ -207,7 +215,7 @@ export class Creature {
 
   // ------------------------------------------------------------------------------------------------ patrol
   roam(dt) {
-    if (this.path) { if (this.follow(dt, CFG.creature.roam + 0.7 * this.aggr(), 3.5)) this.arriveRoam(); }
+    if (this.path) { if (this.follow(dt, CFG.creature.roam * this.tr.roam + 0.7 * this.aggr(), 3.5)) this.arriveRoam(); }
     else if (this.pauseT > 0) this.lookAbout(dt);
     else this.pickRoam();
   }
@@ -220,20 +228,21 @@ export class Creature {
     // now and then it simply stops, lights out, and waits for someone to walk into it
     let near = 1e9; for (const p of w.players.values()) if (p.status === ST.ALIVE) near = Math.min(near, Math.hypot(p.x - this.x, p.z - this.z));
     const a = this.aggr();
-    if (a >= 0.2 && near > 9 && this.backoff <= 0 && w.rand() < 0.12 + 0.16 * a) { this.ambushT = 9 + w.rand() * 12; this.faceTo = null; this.enter(CS.AMBUSH); this.lampsOut = true; }
+    const keen = this.tr.ambush > 1.5;          // one that likes to wait does it from the start, and for longer
+    if ((a >= 0.2 || keen) && near > 9 && this.backoff <= 0 && w.rand() < (0.12 + 0.16 * a) * this.tr.ambush) { this.ambushT = (9 + w.rand() * 12) * (keen ? 1.5 : 1); this.faceTo = null; this.enter(CS.AMBUSH); this.lampsOut = true; }
   }
   pickRoam() {
     const w = this.w, L = this.L, me = this.cell(), a = this.aggr();
-    distField(L.walkC, me, this.dist);
+    distField(this.walk, me, this.dist);
     let hmax = 1e-3; for (const h of this.heat) if (h > hmax) hmax = h;
-    const guard = new Set(); if (a > 0.2) for (const t of w.tags) if (!t.taken) guard.add(L.roomId[t.cell]);
+    const ga = Math.max(a, this.tr.guard), guard = new Set(); if (ga > 0.2) for (const t of w.tags) if (!t.taken) guard.add(L.roomId[t.cell]);
     const alive = []; for (const p of w.players.values()) if (p.status === ST.ALIVE) alive.push(p);
     let best = -1, bs = -1e9;
     for (let i = 0; i < L.pois.length; i++) {
       const q = L.pois[i], d = this.dist[q.cell]; if (d < 1) continue;
       let s = Math.min(60, w.time - this.poiSeen[i]) / 60 + w.rand() * 0.5 - d / 140;
       s += 0.4 * this.heat[q.room] / hmax;
-      if (guard.has(q.room)) s += 0.5 * a;
+      if (guard.has(q.room)) s += 0.5 * ga;
       if (this.hint) s += 1.7 * Math.max(0, 1 - Math.hypot(q.x - this.hint.x, q.z - this.hint.z) / 30);
       if (this.backoff > 0) { let nd = 1e9; for (const p of alive) nd = Math.min(nd, Math.hypot(q.x - p.x, q.z - p.z)); s -= 1.6 * Math.max(0, 1 - nd / 30); }
       if (s > bs) { bs = s; best = i; }
@@ -255,11 +264,11 @@ export class Creature {
     const a = p ? this.aware.get(p.id) || 0 : 0;
     if (!p || p.status !== ST.ALIVE || !s || a < 0.15 || this.stateT > 6) { if (s) this.investigate(s.x, s.z, 0.55, 'glimpse', 0); else this.enter(CS.ROAM); return; }
     this.replanT -= dt;
-    if (this.replanT <= 0) { this.replanT = 0.5; const c = nearestWalk(this.L, this.L.walkC, s.x, s.z, 4); this.path = c >= 0 ? this.pather.find(this.cell(), c, w.doorOpen) : null; this.pathI = this.path && this.path.length > 1 ? 1 : 0; }
+    if (this.replanT <= 0) { this.replanT = 0.5; const c = nearestWalk(this.L, this.walk, s.x, s.z, 4); this.path = c >= 0 ? this.pather.find(this.cell(), c, w.doorOpen) : null; this.pathI = this.path && this.path.length > 1 ? 1 : 0; }
     if (this.path && this.stateT > 0.6) this.follow(dt, 1.5, 4); else { this.stop(dt); this.yaw = angleTo(this.yaw, yawOf(s.x - this.x, s.z - this.z), 4 * dt); }
   }
   investigate(x, z, weight, kind, id) {
-    const L = this.L, w = this.w, c = nearestWalk(L, L.walkC, x, z, 5); if (c < 0) return;
+    const L = this.L, w = this.w, c = nearestWalk(L, this.walk, x, z, 5); if (c < 0) return;
     const first = this.state !== CS.INVEST;
     this.stim = { x, z, w: weight, kind, id, t: w.time };
     this.path = this.pather.find(this.cell(), c, w.doorOpen); this.pathI = this.path && this.path.length > 1 ? 1 : 0; this.pauseT = 0;
@@ -287,7 +296,7 @@ export class Creature {
     for (const p of this.w.players.values()) { if (p.id === except || p.status !== ST.ALIVE || !p.visible || (this.aware.get(p.id) || 0) < 0.6) continue; const d = Math.hypot(p.x - this.x, p.z - this.z); if (d < bd) { bd = d; best = p; } }
     return best;
   }
-  searchDur() { return 16 + 14 * Math.min(1, this.aggr()) + this.w.rand() * 6; }
+  searchDur() { return (16 + 14 * Math.min(1, this.aggr()) + this.w.rand() * 6) * this.tr.search; }
   huntStep(dt) {
     const w = this.w, L = this.L, p = w.players.get(this.target);
     if (!p || p.status !== ST.ALIVE) { const o = this.visibleOther(this.target); this.target = null; if (o) return this.startHunt(o); return this.startSearch(this.last, 0.9, this.searchDur(), null); }
@@ -296,7 +305,7 @@ export class Creature {
     else { this.lostT += dt; if (p.hidden < 0 && this.lostT < 0.9) this.last = { x: p.x, z: p.z, vx: p.vx, vz: p.vz }; }   // for a moment it still knows which way they went
     const o = this.visibleOther(p.id);
     if (o && (!p.visible || Math.hypot(o.x - this.x, o.z - this.z) < d * 0.6)) return this.startHunt(o);
-    const speed = CFG.creature.chase + CFG.creature.chaseGain * Math.min(1, this.aggr()) + (w.lift.state >= LIFT.CALLED ? 0.3 : 0);
+    const speed = CFG.creature.chase + this.tr.chase + CFG.creature.chaseGain * Math.min(1, this.aggr()) + (w.lift.state >= LIFT.CALLED ? 0.3 : 0);
 
     if (this.knowsLocker >= 0) {
       const lk = L.lockers[this.knowsLocker];
@@ -311,11 +320,11 @@ export class Creature {
     }
     const inDuct = L.cells[L.cellOf(p.x, p.z)] === C.DUCT;
     if (p.visible && d < (inDuct ? 2.3 : CFG.creature.catchDist)) return this.enterAttack(p);
-    if (p.visible && !inDuct && clearWalk(L.walkC, this.x, this.z, p.x, p.z, 0.45)) { this.path = null; this.steerAt(dt, p.x, p.z, speed); return; }
+    if (p.visible && !inDuct && clearWalk(this.walk, this.x, this.z, p.x, p.z, 0.45)) { this.path = null; this.steerAt(dt, p.x, p.z, speed); return; }
     this.replanT -= dt;
     if (this.replanT <= 0 || !this.path) {
       this.replanT = 0.25;
-      const tc = nearestWalk(L, L.walkC, this.last.x, this.last.z, 6);
+      const tc = nearestWalk(L, this.walk, this.last.x, this.last.z, 6);
       this.path = tc >= 0 ? this.pather.find(this.cell(), tc, w.doorOpen, 1.5) : null; this.pathI = this.path && this.path.length > 1 ? 1 : 0;
     }
     const arrived = this.path ? this.follow(dt, speed, 9) : true;
@@ -330,7 +339,7 @@ export class Creature {
     if (p) {
       const dx = p.x - this.x, dz = p.z - this.z, d = Math.hypot(dx, dz);
       this.yaw = angleTo(this.yaw, yawOf(dx, dz), 12 * dt);
-      if (!this.attackDone && d > 1.0 && clearWalk(L.walkC, this.x, this.z, this.x + dx / d * 0.3, this.z + dz / d * 0.3, 0.45)) { this.x += dx / d * 5.5 * dt; this.z += dz / d * 5.5 * dt; this.speed = 5.5; } else this.stop(dt);
+      if (!this.attackDone && d > 1.0 && clearWalk(this.walk, this.x, this.z, this.x + dx / d * 0.3, this.z + dz / d * 0.3, 0.45)) { this.x += dx / d * 5.5 * dt; this.z += dz / d * 5.5 * dt; this.speed = 5.5; } else this.stop(dt);
       if (!this.attackDone && this.attackT >= 0.38) {
         this.attackDone = true;
         const inDuct = L.cells[L.cellOf(p.x, p.z)] === C.DUCT;
@@ -356,8 +365,8 @@ export class Creature {
   }
   // step out of sight of the body, put its lights out, and wait for the rescue
   startBait(v) {
-    const w = this.w, L = this.L, vc = nearestWalk(L, L.walkC, v.x, v.z, 3); if (vc < 0) return false;
-    distField(L.walkC, vc, this.dist);
+    const w = this.w, L = this.L, vc = nearestWalk(L, this.walk, v.x, v.z, 3); if (vc < 0) return false;
+    distField(this.walk, vc, this.dist);
     const cand = [];
     for (let i = 0; i < N; i++) { const d = this.dist[i]; if (d < 3 || d > 8 || L.doorAt[i] >= 0) continue; if (!sight(L, null, L.cx(i), L.cz(i), 1.6, v.x, v.z, 0.5)) cand.push(i); }
     if (!cand.length) return false;
@@ -427,10 +436,10 @@ export class Creature {
   }
   pickSearchGoal() {
     const L = this.L, w = this.w, me = this.cell(), occ = this.occ;
-    distField(L.walkC, me, this.dist);
+    distField(this.walk, me, this.dist);
     let best = -1, bs = 2e-5, locker = -1;
     for (let i = W; i < N - W; i++) {
-      if (!L.walkC[i] || this.dist[i] < 0) continue;
+      if (!this.walk[i] || this.dist[i] < 0) continue;
       const m = occ[i] + 0.5 * (occ[i - 1] + occ[i + 1] + occ[i - W] + occ[i + W]); if (m < 1e-5) continue;
       const s = m / (3 + this.dist[i]); if (s > bs) { bs = s; best = i; }
     }
@@ -492,7 +501,7 @@ export class Creature {
   follow(dt, speed, turn) {
     const L = this.L, path = this.path;
     if (!path || this.pathI >= path.length) { this.path = null; this.stop(dt); return true; }
-    for (let g = 0; g < 6 && this.pathI + 1 < path.length && L.doorAt[path[this.pathI]] < 0 && clearWalk(L.walkC, this.x, this.z, L.cx(path[this.pathI + 1]), L.cz(path[this.pathI + 1]), 0.5); g++) this.pathI++;
+    for (let g = 0; g < 6 && this.pathI + 1 < path.length && L.doorAt[path[this.pathI]] < 0 && clearWalk(this.walk, this.x, this.z, L.cx(path[this.pathI + 1]), L.cz(path[this.pathI + 1]), 0.5); g++) this.pathI++;
     const dx = L.cx(path[this.pathI]) - this.x, dz = L.cz(path[this.pathI]) - this.z, d = Math.hypot(dx, dz);
     if (d < 0.3) { this.pathI++; if (this.pathI >= path.length) { this.path = null; this.stop(dt); return true; } return false; }
     this.steer(dt, dx / d, dz / d, speed, turn);
@@ -504,7 +513,7 @@ export class Creature {
     // a shut door in the way gets forced, which takes a moment and can be heard
     for (const reach of [0.4, 1.25]) {
       const dc = L.doorAt[L.cellOf(this.x + dx * reach, this.z + dz * reach)];
-      if (dc >= 0 && w.doorOpen[dc] < 0.85) {
+      if (dc >= 0 && !w.doorSeal[dc] && w.doorOpen[dc] < 0.85) {
         this.stop(dt); this.forcing = true; this.doorT += dt;
         if (w.doorWant[dc] === 0 && this.doorT > (this.state === CS.HUNT ? 0.55 : 0.9)) w.forceDoor(dc);
         return;
@@ -513,10 +522,10 @@ export class Creature {
     this.forcing = false; this.doorT = 0;
     const sp0 = Math.hypot(this.vx, this.vz);
     const align = sp0 > 0.3 ? (this.vx * dx + this.vz * dz) / sp0 : 1;
-    const want = speed * (0.35 + 0.65 * clamp01(align));          // a sharp turn costs it speed: corners are your friend
+    const want = speed * (this.tr.corner + (1 - this.tr.corner) * clamp01(align));          // a sharp turn costs it speed: corners are your friend
     this.speed = approach(this.speed, want, (want > this.speed ? 6 : 16) * dt);
     this.vx = dx * this.speed; this.vz = dz * this.speed;
     const nx = this.x + this.vx * dt, nz = this.z + this.vz * dt;
-    if (L.walkC[L.cellOf(nx, nz)]) { this.x = nx; this.z = nz; } else { this.path = null; this.stop(dt); }
+    if (this.walk[L.cellOf(nx, nz)]) { this.x = nx; this.z = nz; } else { this.path = null; this.stop(dt); }
   }
 }

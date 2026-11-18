@@ -11,7 +11,7 @@ const summary = [];
 for (let seed = 1; seed <= nSeeds; seed++) {
   const w = new World(L, seed * 13), bots = [];
   for (let i = 0; i < nPlayers; i++) { const b = new Bot(w, 'p' + i, 'P' + i); b.mode = 'seek'; b.hideT = 0; b.goal = -1; bots.push(b); }
-  w.startMatch(seed * 1009);
+  w.startMatch(process.env.PLAIN ? -seed * 1009 : seed * 1009);          // PLAIN=1: no sealed doors, all power on, the ordinary creature, for comparison
   const c = w.creature; let last = -1, stateTime = new Array(10).fill(0), log = [];
   const nearest = () => Math.min(...bots.filter(b => b.p.status === ST.ALIVE).map(b => Math.hypot(b.x - c.x, b.z - c.z)), 999);
   const t = run(w, bots, 1500, (t, dt) => {
@@ -49,7 +49,8 @@ for (let seed = 1; seed <= nSeeds; seed++) {
     return w.phase === PH.PLAY;
   });
   const tot = stateTime.reduce((a, b) => a + b, 0);
-  summary.push(`seed ${seed}: ${w.result ? (w.result.win ? 'ESCAPED' : 'wiped  ') : 'timeout'} at ${t.toFixed(0)}s, tags ${w.tagsTaken}/8, hunts ${c.stats.hunts}, catches ${c.stats.catches}, locker checks ${c.stats.lockerChecks} (found ${c.stats.lockerFinds}), learn hide=${c.learn.hide.toFixed(2)} decoy=${c.learn.decoy.toFixed(2)} | ` + stateTime.map((v, i) => v > 0 ? `${CS_NAME[i]} ${(v / tot * 100).toFixed(0)}%` : '').filter(Boolean).join(' '));
+  const lay = w.zoneBase.map(z => 'DF.'[z]).join('');
+  summary.push(`seed ${String(seed).padStart(2)} ${w.trait.key.padEnd(8)} power ${lay} sealed ${w.doorSeal.reduce((a, v) => a + v, 0)}: ${w.result ? (w.result.win ? 'ESCAPED' : 'wiped  ') : 'timeout'} at ${t.toFixed(0)}s, tags ${w.tagsTaken}/8, hunts ${c.stats.hunts}, catches ${c.stats.catches}, locker checks ${c.stats.lockerChecks} (found ${c.stats.lockerFinds}), learn hide=${c.learn.hide.toFixed(2)} decoy=${c.learn.decoy.toFixed(2)} | ` + stateTime.map((v, i) => v > 0 ? `${CS_NAME[i]} ${(v / tot * 100).toFixed(0)}%` : '').filter(Boolean).join(' '));
   if (verbose) console.log(`--- seed ${seed}\n` + log.join('\n'));
 }
 console.log(summary.join('\n'));

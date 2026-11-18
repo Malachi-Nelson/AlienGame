@@ -28,13 +28,35 @@ const res = await g.page.evaluate(async () => {
     'full static and heartbeat (it is on top of you)': s => s.update(0.05, { static: 1, danger: 1, winded: 0, gen: 0 }),
     'out of breath': s => s.update(0.05, { static: 0, danger: 0, winded: 1, gen: 0 }),
     'beside the generators': s => s.update(0.05, { static: 0, danger: 0, winded: 0, gen: 1 }),
+    'tension, in a dark wing': s => s.update(0.05, { static: 0, danger: 0, winded: 0, gen: 0, tension: 0.21 }),
+    'tension, it is close': s => s.update(0.05, { static: 0, danger: 0, winded: 0, gen: 0, tension: 1 }),
+    'caught: the sting': s => s.sting(1),
+    'caught: the sting, scares off': s => s.sting(0.5),
+    'it wakes, 80 m away': s => s.wakeCall(80, 0),
+    'it wakes, 30 m away': s => s.wakeCall(30, 0),
+    'power trips here': s => s.powerDown(1),
+    'power trips in another wing': s => s.powerDown(0.12),
+    'power comes back': s => s.powerUp(1),
+    'the borehole shifts': s => s.quake(2),
+    'door fault at 8 m': s => s.fault(8, 0, false),
+    'a creak at 25 m': s => s.creak(25, 0),
+    'knocking at 25 m': s => s.knock(25, 0),
+    'ice cracking at 20 m': s => s.iceCrack(20, 0),
+    'wind in the bore at 30 m': s => s.howl(30, 0),
+    'a drip at 5 m': s => s.drip(5, 0),
+    'radio garble': s => s.garble(1.5),
+    'a breath behind you': s => s.breath(-0.9, 0),
+    'something in a duct at 3 m': s => s.ductScuttle(3, 0),
+    'a locker struck from inside at 2 m': s => s.thump(2, 0),
+    'a tube going overhead': s => s.pop(1.5, 0),
+    'a figure vanishing': s => s.vanish(),
   };
   const out = {};
   for (const [name, fn] of Object.entries(cases)) {
     const secs = 2.5, ctx = new OfflineAudioContext(2, 44100 * secs, 44100), s = new __los.Sound(); s.vol = 0.8; s.start(ctx, name !== 'room tone only');
-    s.creakT = 999; s.listener(0, 1.6, 0, 1, 0, 0);
+    s.listener(0, 1.6, 0, 1, 0, 0);
     // play it a few times, spaced out, part-way into the render
-    let err = null; const times = /footfall|footstep/.test(name) ? [0.3, 0.6, 0.9, 1.2, 1.5] : /static|breath|generators/.test(name) ? Array.from({ length: 46 }, (_, i) => 0.1 + i * 0.05) : [0.3];
+    let err = null; const times = /footfall|footstep/.test(name) ? [0.3, 0.6, 0.9, 1.2, 1.5] : /static|out of breath|generators|tension/.test(name) ? Array.from({ length: 46 }, (_, i) => 0.1 + i * 0.05) : [0.3];
     for (const t of times) ctx.suspend(t).then(() => { try { fn(s); } catch (e) { err = e; } ctx.resume(); });
     const buf = await ctx.startRendering(); if (err) { out[name] = 'ERROR ' + err.message; continue; }
     let peak = 0, sum = 0, n = 0;

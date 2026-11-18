@@ -1,7 +1,7 @@
 // Builds the outpost in three.js from the level description, and keeps the moving parts (doors, tags, sounders, the lift) in step
 // with the match. Fixed lights are worked out once per vertex at load time; only lamps and a few small lights are live.
 import * as THREE from 'three';
-import { T, W, H, C, LOW_H, DUCT_H, lightAt } from '../level.js';
+import { T, W, H, C, LOW_H, DUCT_H, lightAt, ZONES } from '../level.js';
 import { makeTextures, glowTexture, signTexture } from './textures.js';
 import { rng32, clamp01 } from '../util.js';
 import { LIFT } from '../sim/defs.js';
@@ -11,7 +11,7 @@ const DOOR_H = 2.5;
 
 // ---------------------------------------------------------------------------------------------- geometry with baked light
 class Geo {
-  constructor() { this.pos = []; this.nor = []; this.uv = []; this.col = []; this.bk = []; this.bk2 = []; this.idx = []; this.n = 0; }
+  constructor() { this.pos = []; this.nor = []; this.uv = []; this.col = []; this.bk = []; this.bk2 = []; this.zw = []; this.idx = []; this.n = 0; }
   // A flat patch: corner o, edges u and v (u x v is the facing), cut into su by sv pieces. disp nudges inner points for rough ice.
   quad(L, o, u, v, su, sv, uv0, uvU, uvV, color, disp, gain = 1) {
     let nx = u[1] * v[2] - u[2] * v[1], ny = u[2] * v[0] - u[0] * v[2], nz = u[0] * v[1] - u[1] * v[0];
@@ -26,6 +26,8 @@ class Geo {
       this.uv.push(uv0[0] + uvU[0] * s + uvV[0] * t, uv0[1] + uvU[1] * s + uvV[1] * t);
       this.col.push(color[0], color[1], color[2]);
       this.bk.push(e[0] * gain, e[1] * gain, e[2] * gain); this.bk2.push(e[3] * gain, e[4] * gain, e[5] * gain);
+      // what share of this point's light comes from each power circuit (the first circuit's share is whatever is left over)
+      const zt = e[6] + e[7] + e[8] + e[9] + e[10]; if (zt > 1e-9) this.zw.push(e[7] / zt, e[8] / zt, e[9] / zt, e[10] / zt); else this.zw.push(0, 0, 0, 0);
       this.n++;
     }
     const row = su + 1;
@@ -58,6 +60,7 @@ class Geo {
     g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
     g.setAttribute('bake', new THREE.Float32BufferAttribute(this.bk, 3));
     g.setAttribute('bake2', new THREE.Float32BufferAttribute(this.bk2, 3));
+    g.setAttribute('zw', new THREE.Float32BufferAttribute(this.zw, 4));
     g.setIndex(this.idx);
     g.computeBoundingSphere(); g.computeBoundingBox();
     return g;
@@ -101,7 +104,8 @@ export class Scene3D {
     this.L = L;
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.FogExp2(0x04070a, 0.03);
-    this.uni = { uFlick: { value: 1 }, uBakeGain: { value: 6 } };
+    this.uni = { uFlick: { value: 1 }, uBakeGain: { value: 6 }, uZone0: { value: 1 }, uZone: { value: new THREE.Vector4(1, 1, 1, 1) } };
+    this.pow = new Float32Array(ZONES.length).fill(1);       // how much light each power circuit is giving right now (see setPower)
     this.tx = makeTextures(opts.aniso || 4);
     this.glowTex = glowTexture();
     this.time = 0; this.flick = 1; this.flickT = 0; this.flickTo = 1;
@@ -112,8 +116,10 @@ export class Scene3D {
       ice: this.baked({ map: this.tx.ice.map, normalMap: this.tx.ice.normalMap, roughness: 0.3, metalness: 0.0 }),
       prop: this.baked({ map: this.tx.prop.map, normalMap: this.tx.prop.normalMap, roughness: 0.6, metalness: 0.25 }),
       glow: new THREE.MeshBasicMaterial({ vertexColors: true }),
-      glowF: new THREE.MeshBasicMaterial({ vertexColors: true }),
     };
+    // the light fittings themselves, one material per circuit so that they go dark with it; F: the ones that stutter
+    this.fitMat = ZONES.map(() => new THREE.MeshBasicMaterial({ vertexColors: true })); this.fitMatF = ZONES.map(() => new THREE.MeshBasicMaterial({ vertexColors: true }));
+    this.sealMat = new THREE.MeshBasicMaterial({ color: 0xff2a12 });
     this.mats.ice.normalScale.set(1.4, 1.4);
     this.doors = []; this.tags = []; this.items = []; this.decoys = new Map(); this.sprites = [];
     this.buildStatic();
@@ -126,10 +132,10 @@ export class Scene3D {
   baked(params) {
     const m = new THREE.MeshStandardMaterial(Object.assign({ vertexColors: true }, params)), uni = this.uni;
     m.onBeforeCompile = sh => {
-      sh.uniforms.uFlick = uni.uFlick; sh.uniforms.uBakeGain = uni.uBakeGain;
+      sh.uniforms.uFlick = uni.uFlick; sh.uniforms.uBakeGain = uni.uBakeGain; sh.uniforms.uZone0 = uni.uZone0; sh.uniforms.uZone = uni.uZone;
       sh.vertexShader = sh.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute vec3 bake;\nattribute vec3 bake2;\nvarying vec3 vBake;\nuniform float uFlick;\nuniform float uBakeGain;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvBake = (bake + bake2 * uFlick) * uBakeGain;');
+        .replace('#include <common>', '#include <common>\nattribute vec3 bake;\nattribute vec3 bake2;\nattribute vec4 zw;\nvarying vec3 vBake;\nuniform float uFlick;\nuniform float uBakeGain;\nuniform float uZone0;\nuniform vec4 uZone;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvBake = (bake + bake2 * uFlick) * uBakeGain * (uZone0 * (1.0 - zw.x - zw.y - zw.z - zw.w) + dot(zw, uZone));');
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <common>', '#include <common>\nvarying vec3 vBake;')
         .replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>\nirradiance += vBake;');
@@ -150,13 +156,19 @@ export class Scene3D {
   }
   // The fixed light around a point, for the materials above.
   ambientAt(x, y, z, out) {
-    const e = lightAt(this.L, x, y, z, 0, 0, 0), g = this.uni.uBakeGain.value * 2.0, f = this.uni.uFlick.value;
+    const e = lightAt(this.L, x, y, z, 0, 0, 0), f = this.uni.uFlick.value, p = this.pow, zt = e[6] + e[7] + e[8] + e[9] + e[10];
+    const g = this.uni.uBakeGain.value * 2.0 * (zt > 1e-9 ? (e[6] * p[0] + e[7] * p[1] + e[8] * p[2] + e[9] * p[3] + e[10] * p[4]) / zt : 1);
     return out.setRGB((e[0] + e[3] * f) * g, (e[1] + e[4] * f) * g, (e[2] + e[5] * f) * g);
+  }
+  // levels: how bright each of the five circuits is, 0 to 1. all: one more factor over the lot (a flicker, a dip).
+  setPower(levels, all = 1) {
+    const p = this.pow; for (let z = 0; z < p.length; z++) p[z] = levels[z] * all;
+    this.uni.uZone0.value = p[0]; this.uni.uZone.value.set(p[1], p[2], p[3], p[4]);
   }
 
   // ------------------------------------------------------------------------------------------ everything that never moves
   buildStatic() {
-    const L = this.L, geos = new Map(), glow = new GlowGeo(), glowF = new GlowGeo(), rnd = rng32(4471);
+    const L = this.L, geos = new Map(), glow = new GlowGeo(), fit = ZONES.map(() => new GlowGeo()), fitF = ZONES.map(() => new GlowGeo()), rnd = rng32(4471);
     const G = (name, cx, cz) => { const k = name + ':' + ((cx / BLOCK) | 0) + ':' + ((cz / BLOCK) | 0); let g = geos.get(k); if (!g) { g = new Geo(); g.mat = name; geos.set(k, g); } return g; };
     const open = i => { const c = L.cells[i]; return c !== C.SOLID && c !== C.LOCKER; };
     const iceDisp = (x, y, z) => 0.05 + 0.32 * vnoise(x * 0.9, y * 0.9, z * 0.9);
@@ -207,7 +219,7 @@ export class Scene3D {
     }
     // light fittings
     for (const l of L.lights) {
-      const gg = l.flicker ? glowF : glow, c = [l.r * 3.2, l.g * 3.2, l.b * 3.2];
+      const gg = (l.flicker ? fitF : fit)[l.zone], c = [l.r * 3.2, l.g * 3.2, l.b * 3.2];
       if (l.kind === 'ceil') {
         const top = L.ceil[L.idx(l.cx, l.cz)], y = Math.min(top - 0.02, l.y + 0.23);
         G('prop', l.cx, l.cz).box(L, l.x - 0.55, y - 0.1, l.z - 0.22, l.x + 0.55, y, l.z + 0.22, [0.12, 0.13, 0.14], true);
@@ -221,7 +233,7 @@ export class Scene3D {
     this.buildPit(G, glow);
     for (const g of geos.values()) { if (!g.n) continue; const m = new THREE.Mesh(g.build(), this.mats[g.mat]); m.castShadow = g.mat !== 'floor' && g.mat !== 'ceil'; m.receiveShadow = true; m.matrixAutoUpdate = false; this.scene.add(m); }
     const gm = new THREE.Mesh(glow.build(), this.mats.glow); gm.matrixAutoUpdate = false; gm.frustumCulled = false; this.scene.add(gm);
-    const gf = new THREE.Mesh(glowF.build(), this.mats.glowF); gf.matrixAutoUpdate = false; gf.frustumCulled = false; this.scene.add(gf);
+    for (let z = 0; z < ZONES.length; z++) for (const [geo, mat] of [[fit[z], this.fitMat[z]], [fitF[z], this.fitMatF[z]]]) { if (!geo.n) continue; const m = new THREE.Mesh(geo.build(), mat); m.matrixAutoUpdate = false; m.frustumCulled = false; this.scene.add(m); }
   }
 
   buildProp(L, g, glow, cx, cz, c, kind, rnd) {
@@ -325,7 +337,7 @@ export class Scene3D {
     for (const d of L.doors) {
       const ax = d.axis === 'x', len = d.len, half = len / 2;
       const grp = new THREE.Group(); grp.position.set(d.x, 0, d.z); this.scene.add(grp);
-      const rec = { d, grp, leaves: [], open: -1, lamp: null };
+      const rec = { d, grp, leaves: [], open: -1, lamp: null, seal: null, sealed: false };
       if (d.gate) {
         const g = new Geo(), haz = [0.9, 0.62, 0.08], blk = [0.08, 0.08, 0.08];
         for (let k = 0; k <= len / 0.5; k++) { const p = -half + k * 0.5; g.box(L, d.x - 0.04, 0.05, d.z + p - 0.04, d.x + 0.04, 2.4, d.z + p + 0.04, k % 2 ? haz : blk, true); }
@@ -350,6 +362,17 @@ export class Scene3D {
         if (ax) { lg.quad([-0.14, y, 0.165], [0.28, 0, 0], [0, 0.07, 0], [1, 1, 1]); lg.quad([0.14, y, -0.165], [-0.28, 0, 0], [0, 0.07, 0], [1, 1, 1]); }
         else { lg.quad([0.165, y, 0.14], [0, 0, -0.28], [0, 0.07, 0], [1, 1, 1]); lg.quad([-0.165, y, -0.14], [0, 0, 0.28], [0, 0.07, 0], [1, 1, 1]); }
         rec.lamp = new THREE.Mesh(lg.build(), new THREE.MeshBasicMaterial({ color: 0xffaa22 })); grp.add(rec.lamp);
+        // two steel bars welded across both faces and a red tell-tale, shown only on a match where this door has been sealed
+        const sg = new Geo(), steel = [0.34, 0.33, 0.3], tb = 0.125;
+        const bar = (p0, p1, y0, y1) => ax ? sg.box(L, d.x + p0, y0, d.z - tb, d.x + p1, y1, d.z + tb, steel, true) : sg.box(L, d.x - tb, y0, d.z + p0, d.x + tb, y1, d.z + p1, steel, true);
+        for (const y of [0.62, 1.78]) bar(-half + 0.05, half - 0.05, y, y + 0.12);
+        for (const q of [-half + 0.16, half - 0.3]) bar(q, q + 0.14, 0.5, 2.02);
+        const sgeo = sg.build(); sgeo.translate(-d.x, 0, -d.z);
+        const bars = new THREE.Mesh(sgeo, leafMat); bars.castShadow = true; bars.receiveShadow = true;
+        const rg = new GlowGeo(), ry = 1.24;
+        if (ax) { rg.quad([-0.2, ry, 0.092], [0.4, 0, 0], [0, 0.06, 0], [1, 1, 1]); rg.quad([0.2, ry, -0.092], [-0.4, 0, 0], [0, 0.06, 0], [1, 1, 1]); }
+        else { rg.quad([0.092, ry, 0.2], [0, 0, -0.4], [0, 0.06, 0], [1, 1, 1]); rg.quad([-0.092, ry, -0.2], [0, 0, 0.4], [0, 0.06, 0], [1, 1, 1]); }
+        rec.seal = new THREE.Group(); rec.seal.add(bars); rec.seal.add(new THREE.Mesh(rg.build(), this.sealMat)); rec.seal.visible = false; grp.add(rec.seal);
         // name plates: each side shows where the door leads
         const c0 = d.cells[0], cx = c0 % W, cz = (c0 / W) | 0;
         const sideA = ax ? L.idx(cx, cz - 1) : L.idx(cx - 1, cz), sideB = ax ? L.idx(cx, cz + 1) : L.idx(cx + 1, cz);
@@ -407,6 +430,7 @@ export class Scene3D {
     return g;
   }
   setLayout(layout) {
+    for (const r of this.doors) { r.sealed = layout.sealed.includes(r.d.id); if (r.seal) r.seal.visible = r.sealed; r.open = -1; }
     for (const t of this.tags) this.scene.remove(t.obj); for (const t of this.items) this.scene.remove(t.obj);
     for (const d of this.decoys.values()) this.scene.remove(d.obj); this.decoys.clear();
     const col = new THREE.Color();
@@ -421,12 +445,13 @@ export class Scene3D {
     // failing lights: mostly on, with stutters
     this.flickT -= dt; if (this.flickT <= 0) { const r = Math.random(); this.flickTo = r < 0.18 ? 0.08 : r < 0.3 ? 0.5 : 1; this.flickT = this.flickTo < 1 ? 0.04 + Math.random() * 0.14 : 0.1 + Math.random() * 1.6; }
     this.flick += (this.flickTo - this.flick) * Math.min(1, dt * 40);
-    this.uni.uFlick.value = this.flick; this.mats.glowF.color.setScalar(0.1 + 0.9 * this.flick);
+    this.uni.uFlick.value = this.flick;
+    for (let z = 0; z < this.pow.length; z++) { const on = 0.04 + 0.96 * Math.min(1, this.pow[z]); this.fitMat[z].color.setScalar(on); this.fitMatF[z].color.setScalar(on * (0.1 + 0.9 * this.flick)); }
     if (!rep) return;
     for (const r of this.doors) {
       const o = rep.doorOpen[r.d.id]; if (o === r.open && r.jam === rep.doorJam[r.d.id]) continue; r.open = o; r.jam = rep.doorJam[r.d.id];
       if (r.d.gate) r.leaves[0].position.y = o * 2.7;
-      else { const s = o * (r.d.len / 2 - 0.06); for (const m of r.leaves) { if (r.d.axis === 'x') m.position.x = m.userData.s * s; else m.position.z = m.userData.s * s; } r.lamp.material.color.setHex(r.jam ? 0xff2a12 : rep.doorWant[r.d.id] ? 0x38ff8a : 0xffa424); }
+      else { const s = o * (r.d.len / 2 - 0.06); for (const m of r.leaves) { if (r.d.axis === 'x') m.position.x = m.userData.s * s; else m.position.z = m.userData.s * s; } r.lamp.material.color.setHex(r.sealed || r.jam ? 0xff2a12 : rep.doorWant[r.d.id] ? 0x38ff8a : 0xffa424); }
     }
     for (let i = 0; i < this.tags.length; i++) { const t = this.tags[i], taken = !!(rep.tagBits & (1 << i)); if (taken !== t.taken) { t.taken = taken; t.obj.visible = !taken; } if (!taken) t.obj.userData.led.material.opacity = 0.35 + 0.65 * Math.max(0, Math.sin(this.time * 3.2 + t.ph)); }
     for (let i = 0; i < this.items.length; i++) { const t = this.items[i], taken = !!(rep.itemBits & (1 << i)); if (taken !== t.taken) { t.taken = taken; t.obj.visible = !taken; } if (!taken) t.obj.userData.led.material.opacity = 0.2 + 0.5 * Math.max(0, Math.sin(this.time * 2.1 + t.ph)); }
