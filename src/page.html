@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loss of Signal</title>
+<meta name="description" content="An online co-op survival horror game for the browser. Eight crew tags, one lift out, and something in the outpost that listens.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%23071013'/%3E%3Crect x='6' y='20' width='4' height='6' fill='%237fe3d4'/%3E%3Crect x='14' y='14' width='4' height='12' fill='%237fe3d4'/%3E%3Crect x='22' y='7' width='4' height='19' fill='%23284e4a'/%3E%3C/svg%3E">
+<style>/*CSS*/</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+
+<div id="hud" hidden>
+  <div id="h-tl">
+    <div class="cap">Crew tags</div>
+    <div id="h-tags"></div>
+    <div id="h-obj"></div>
+  </div>
+  <div id="h-tr">
+    <div id="h-signal" title="Your suit link. It drops as the creature gets closer."><span>Signal</span><i></i><i></i><i></i><i></i><i></i></div>
+    <div id="h-roster"></div>
+  </div>
+  <div id="h-room"></div>
+  <div id="h-cross"></div>
+  <div id="h-prompt"></div>
+  <div id="h-hold"><i></i></div>
+  <div id="h-log"><b></b><span></span></div>
+  <div id="h-feed"></div>
+  <div id="h-banner"></div>
+  <div id="h-bl">
+    <div id="h-seen" title="How close the creature is to noticing you"><span>Seen</span><em><i></i></em></div>
+    <div id="h-stam" title="Breath"><i></i></div>
+    <div id="h-kit"><span id="h-lamp">Lamp off</span><span id="h-stance">Standing</span><span id="h-snd">Sounders 1</span></div>
+  </div>
+  <div id="h-scan" hidden><div id="h-arrow"></div><span id="h-dist"></span></div>
+  <div id="h-marks"></div>
+  <div id="h-mapwrap" hidden><canvas id="h-map" width="760" height="560"></canvas><p>You are the bright dot. The schematic does not show the creature.</p></div>
+  <div id="h-down" hidden><b></b><span></span><em><i></i></em></div>
+</div>
+
+<div id="overlay">
+  <div class="card" data-screen="title">
+    <div class="eyebrow">Outpost Ymir · borehole station · day 19 of silence</div>
+    <h1>Loss of <em>Signal</em></h1>
+    <p class="lede">The outpost stopped answering nineteen days ago. You are the relief crew. The lift back to the surface is under quarantine lock, and eight crew tags will override it. Find them. Something down here is listening.</p>
+    <div class="row"><label for="m-name">Name</label><input id="m-name" type="text" maxlength="14" autocomplete="off" spellcheck="false" placeholder="Crew"></div>
+    <div class="row btns">
+      <button id="m-solo" type="button" class="primary">Go in alone</button>
+      <button id="m-host" type="button" disabled>Open a crew</button>
+      <button id="m-join" type="button" disabled>Join a crew</button>
+    </div>
+    <div class="status" id="m-status">Co-op: connecting…</div>
+    <div class="row link"><input id="m-link" readonly aria-label="Link to this room"><button id="m-copy" type="button">Copy link</button><button id="m-priv" type="button">Make a private room</button></div>
+    <dl class="keys">
+      <div><dt>W A S D</dt><dd>Move</dd></div><div><dt>Shift</dt><dd>Run (loud)</dd></div><div><dt>C</dt><dd>Crouch (quiet)</dd></div><div><dt>E</dt><dd>Use · hide · pick up</dd></div>
+      <div><dt>F</dt><dd>Lamp</dd></div><div><dt>Q / right click</dt><dd>Tag scanner (it pings)</dd></div><div><dt>G / click</dt><dd>Throw a sounder</dd></div><div><dt>Tab</dt><dd>Schematic</dd></div>
+    </dl>
+    <div class="row set">
+      <label for="s-sens">Mouse</label><input id="s-sens" type="range" min="0.3" max="3" step="0.1" value="1">
+      <label for="s-vol">Volume</label><input id="s-vol" type="range" min="0" max="1" step="0.05" value="0.8">
+      <label for="s-bri">Brightness</label><input id="s-bri" type="range" min="0.6" max="2" step="0.05" value="1">
+      <label for="s-q">Detail</label><select id="s-q"><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
+    </div>
+    <p class="note">Needs a keyboard and mouse, and sounds much better with headphones. Everyone who opens this page is in the same public room; a private room gives you a link for just your group. <span id="m-build"></span></p>
+  </div>
+
+  <div class="card" data-screen="lobby" hidden>
+    <div class="eyebrow">Dock · staging</div>
+    <h2>Crew</h2>
+    <ul id="l-roster" class="roster"></ul>
+    <p class="lede" id="l-text">Waiting for the crew leader to start.</p>
+    <div class="row btns"><button id="l-start" type="button" class="primary" hidden>Start the descent</button><button id="l-ready" type="button" class="primary" hidden>Ready</button><button id="l-leave" type="button">Leave</button></div>
+    <div class="row link"><input id="l-link" readonly aria-label="Link to this room"><button id="l-copy" type="button">Copy link</button></div>
+    <p class="note">Up to six. Send the others this link; they open it and press Join a crew.</p>
+  </div>
+
+  <div class="card small" data-screen="pause" hidden>
+    <h2>Paused</h2>
+    <p class="lede" id="p-text">The match carries on without you while this is open.</p>
+    <div class="row btns"><button id="p-resume" type="button" class="primary">Back in</button><button id="p-leave" type="button">Leave the match</button></div>
+    <div class="row set">
+      <label for="p-sens">Mouse</label><input id="p-sens" type="range" min="0.3" max="3" step="0.1" value="1">
+      <label for="p-vol">Volume</label><input id="p-vol" type="range" min="0" max="1" step="0.05" value="0.8">
+      <label for="p-bri">Brightness</label><input id="p-bri" type="range" min="0.6" max="2" step="0.05" value="1">
+      <label for="p-q">Detail</label><select id="p-q"><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
+    </div>
+  </div>
+
+  <div class="card small" data-screen="end" hidden>
+    <div class="eyebrow" id="e-eyebrow"></div>
+    <h2 id="e-title"></h2>
+    <p class="lede" id="e-text"></p>
+    <div class="stats" id="e-stats"></div>
+    <div class="row btns"><button id="e-again" type="button" class="primary">Again</button><button id="e-leave" type="button">Main menu</button></div>
+  </div>
+
+  <div class="card small" data-screen="click" hidden>
+    <h2>Click to go in</h2>
+    <p class="lede">Your mouse will be captured. Esc lets it go.</p>
+  </div>
+</div>
+<div id="notice" hidden></div>
+
+<script src="mqtt.min.js?v=437" async></script>
+<script src="game.js?v=__V__"></script>
+</body>
+</html>

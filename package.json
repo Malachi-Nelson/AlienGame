@@ -1,0 +1,26 @@
+{
+  "name": "loss-of-signal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Loss of Signal: an online co-op survival horror game for the browser. One creature, eight crew tags, one lift out.",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "dev": "node tools/build.mjs --serve",
+    "test": "node --test \"test/*.test.js\"",
+    "map": "node tools/print-map.mjs",
+    "check:page": "node tools/check-page.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "three": "0.170.0"
+  },
+  "homepage": "https://malachi-nelson.github.io/AlienGame/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Malachi-Nelson/AlienGame.git"
+  }
+}
