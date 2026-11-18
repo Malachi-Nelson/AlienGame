@@ -1,9 +1,9 @@
 // Nobody can listen to a headless browser, so this renders each sound offline and measures it: is anything silent, clipping,
 // or wildly louder than the rest? Each sound is measured on its own, without the room tone, after the master gain and
-// compressor, as it reaches the speakers.
+// compressor, as it reaches the speakers. ONLY=regex measures just the sounds whose names match.
 import { serveDist, standInRelay, launch, openGame } from './lib.mjs';
 const srv = await serveDist(), relay = await standInRelay(), browser = await launch(), g = await openGame(browser, srv.url, { relay: relay.url });
-const res = await g.page.evaluate(async () => {
+const res = await g.page.evaluate(async ONLY => {
   const cases = {
     'room tone only': s => {},
     'own footstep, walking': s => s.step({ run: false, crouch: false }),
@@ -50,6 +50,18 @@ const res = await g.page.evaluate(async () => {
     'a locker struck from inside at 2 m': s => s.thump(2, 0),
     'a tube going overhead': s => s.pop(1.5, 0),
     'a figure vanishing': s => s.vanish(),
+    'it crawls in the vent above you': s => s.ventCrawl(1, 0),
+    'it crawls in a vent 15 m off': s => s.ventCrawl(15, 0),
+    'a vent hatch bangs at 4 m': s => s.ventBang(4, 0, false),
+    'a vent hatch bangs at 25 m, walls between': s => s.ventBang(25, 0, true),
+    'a coolant pump being worked': s => s.stationWork('pump', 1.5, 0, false),
+    'the reactor lever': s => s.stationWork('lever', 1.5, 0, false),
+    'a terminal downloading': s => s.stationWork('terminal', 1.5, 0, false),
+    'a station done': s => s.stationDone(1.5, 0),
+    'a bulkhead opening at 6 m': s => s.bulkhead(6, 0, 0.9),
+    'a bulkhead opening 50 m away': s => s.bulkhead(50, 0, 0.15),
+    'the reactor starting': s => s.reactor(),
+    'the pod launching': s => s.podLaunch(),
     'its neck cracking at 3 m': s => s.crack(3, 0, false),
     'its neck cracking at 12 m': s => s.crack(12, 0, false),
     'it breathes, 5 m away': s => s.voice('breath', 5, 0, false),
@@ -64,8 +76,9 @@ const res = await g.page.evaluate(async () => {
     'your own breathing, shut in a locker': s => s.update(0.05, { static: 0, danger: 0, winded: 0, gen: 0, hiding: true, holding: false }),
     'holding your breath, it is at the door': s => { s.update(0.05, { static: 0.6, danger: 0.9, winded: 0, gen: 0, hiding: true, holding: true }); if (!s._once) { s._once = 1; s.tick(1.5, 0, 2, false); } },
   };
-  const out = {};
+  const out = {}, only = ONLY ? new RegExp(ONLY) : null;
   for (const [name, fn] of Object.entries(cases)) {
+    if (only && !only.test(name)) continue;
     const secs = 2.5, ctx = new OfflineAudioContext(2, 44100 * secs, 44100), s = new __los.Sound(); s.vol = 0.8; s.start(ctx, name !== 'room tone only');
     s.listener(0, 1.6, 0, 1, 0, 0);
     // play it a few times, spaced out, part-way into the render
@@ -77,7 +90,7 @@ const res = await g.page.evaluate(async () => {
     out[name] = { peak: +peak.toFixed(3), rmsDb: +(20 * Math.log10(Math.sqrt(sum / n) + 1e-9)).toFixed(1), peakDb: +(20 * Math.log10(peak + 1e-9)).toFixed(1) };
   }
   return out;
-});
+}, process.env.ONLY || '');
 let bad = 0;
 for (const [k, v] of Object.entries(res)) { const flag = typeof v === 'string' ? 'ERROR' : v.peak >= 0.999 ? 'CLIPS' : v.peak < 0.004 ? 'SILENT' : ''; if (flag) bad++; console.log(k.padEnd(44), typeof v === 'string' ? v : `peak ${String(v.peakDb).padStart(6)} dB   average ${String(v.rmsDb).padStart(6)} dB  ${flag}`); }
 console.log(g.errors.length ? 'page errors:\n' + g.errors.join('\n') : 'no page errors');

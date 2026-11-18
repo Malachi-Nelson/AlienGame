@@ -1,4 +1,4 @@
-// Stand-in players for the tests: they walk the outpost the way a person would, one report per tick.
+// Stand-in players for the tests: they walk the ship the way a person would, one report per tick.
 import { T, W, C } from '../src/level.js';
 import { Pather } from '../src/nav.js';
 import { F } from '../src/sim/defs.js';
@@ -10,7 +10,7 @@ export class Bot {
     this.x = this.p.x; this.z = this.p.z; this.yaw = 0;
     this.walk = this.L.walkP.slice(); this.mid = -1;          // where it can go this match: it knows which doors are sealed, as a player would from the schematic
     this.pather = new Pather(this.L, this.walk);
-    this.path = null; this.pi = 0; this.speed = 2.6; this.crouch = false; this.light = false; this.scan = false; this.hold = false; this.lk = -1; this.rv = -1;
+    this.path = null; this.pi = 0; this.speed = 2.6; this.crouch = false; this.light = false; this.scan = false; this.hold = false; this.lk = -1; this.rv = -1; this.ws = -1;
     this.acts = []; this.seq = 0;
   }
   act(type, ...args) { this.acts.push([++this.seq, type, ...args]); }
@@ -31,7 +31,7 @@ export class Bot {
     }
     this.acts = this.acts.filter(a => a[0] > p.ack);
     const inDuct = L.cells[L.cellOf(this.x, this.z)] === C.DUCT;
-    this.w.input(this.id, { x: this.x, z: this.z, yaw: this.yaw, pitch: 0, f: ((this.crouch || inDuct) ? F.CROUCH : 0) | (this.light ? F.LIGHT : 0) | (this.scan ? F.SCAN : 0) | (this.hold ? F.HOLD : 0), lk: this.lk, rv: this.rv, acts: this.acts });
+    this.w.input(this.id, { x: this.x, z: this.z, yaw: this.yaw, pitch: 0, f: ((this.crouch || inDuct) ? F.CROUCH : 0) | (this.light ? F.LIGHT : 0) | (this.scan ? F.SCAN : 0) | (this.hold ? F.HOLD : 0), lk: this.lk, rv: this.rv, ws: this.ws, acts: this.acts });
   }
 }
 

@@ -9,11 +9,11 @@ import { Bot, run } from './helpers.js';
 
 const L = buildLevel();
 
-test('the outpost is sound', () => {
+test('the ship is sound', () => {
   assert.deepEqual(validateLevel(L), []);
 });
 
-test('every match lays out eight tags that all players agree on', () => {
+test('every match lays out its tags in the cargo hold, and all players agree on them', () => {
   for (let seed = 1; seed < 200; seed++) {
     const a = layoutMatch(L, seed), b = layoutMatch(L, seed);
     assert.equal(a.tags.length, CFG.TAGS); assert.ok(a.items.length >= CFG.ITEMS - 2 && a.items.length <= CFG.ITEMS + 2);
@@ -38,14 +38,14 @@ test('paths exist between every pair of patrol points and never cut a corner', (
 test('walls block sight, open floor does not, and a desk hides only someone crouching', () => {
   const open = new Float32Array(L.doors.length).fill(1), shut = new Float32Array(L.doors.length);
   const at = (cx, cz) => [(cx + 0.5) * T, (cz + 0.5) * T];
-  assert.ok(sight(L, open, ...at(12, 23), 2, ...at(14, 27), 1.6));               // across the dock
-  assert.ok(!sight(L, open, ...at(12, 23), 2, ...at(8, 8), 1.6));                // dock to comms, through rock
-  assert.ok(sight(L, open, ...at(15, 24), 2, ...at(21, 24), 1.6));               // through the open dock door
-  assert.ok(!sight(L, shut, ...at(15, 24), 2, ...at(21, 24), 1.6));              // and not through it shut
-  // mess table at 27..28,42: creature at 25,42 looking east at someone just beyond it
-  assert.ok(sight(L, open, ...at(25, 42), 2, ...at(29, 42), 1.6));
-  assert.ok(!sight(L, open, ...at(25, 42), 2, 58.4, 85, 0.9), 'crouched tight against the table');
-  assert.ok(sight(L, open, ...at(25, 42), 2, 61, 85, 0.9), 'crouched well back from it: seen over the top');
+  assert.ok(sight(L, open, ...at(3, 15), 2, ...at(5, 19), 1.6));                 // across the airlock
+  assert.ok(!sight(L, open, ...at(3, 15), 2, ...at(12, 6), 1.6));                // airlock to the reactor room, through bulkheads
+  assert.ok(sight(L, open, ...at(5, 16), 2, ...at(10, 16), 1.6));                // through the open airlock door
+  assert.ok(!sight(L, shut, ...at(5, 16), 2, ...at(10, 16), 1.6));               // and not through it shut
+  // a mess table along 64..66,7: the creature at 65,4 looking south at someone just beyond it
+  assert.ok(sight(L, open, ...at(65, 4), 2, ...at(65, 9), 1.6));
+  assert.ok(!sight(L, open, ...at(65, 4), 2, 131, 16.4, 0.9), 'crouched tight against the table');
+  assert.ok(sight(L, open, ...at(65, 4), 2, 131, 19, 0.9), 'crouched well back from it: seen over the top');
 });
 
 test('the creature wakes, patrols, and stays on the floor', () => {
@@ -71,22 +71,51 @@ test('someone who runs about with a lamp on gets caught', () => {
   assert.ok(w.creature.stats.hunts >= 1);
 });
 
-test('collecting every tag unlocks the lift, and riding it wins', () => {
+test('each section opens the next (the reactor, the tags, the terminals, the uplink), and the pod gets the crew off', () => {
   const w = new World(L, 5), b = new Bot(w, 'a', 'A'); w.startMatch(99);
   w.creature.update = () => {};                         // this test is about the rules, not the creature
-  for (let i = 0; i < w.tags.length; i++) {
-    assert.equal(w.lift.state, LIFT.LOCKED);
-    b.x = w.tags[i].x + 0.8; b.z = w.tags[i].z; b.act('T', i); run(w, [b], 0.5);
-    assert.ok(w.tags[i].taken, `tag ${i} not taken`);
-  }
+  const go = (cx, cz) => { b.x = (cx + 0.5) * T; b.z = (cz + 0.5) * T; };
+  const work = st => { const s = L.stations[st.id]; b.x = s.ax; b.z = s.az; b.ws = st.id; run(w, [b], CFG.station[st.kind] + 0.5); b.ws = -1; };
+  // engineering: three pumps, then the reactor lever, which does nothing until the pumps are done
+  assert.ok(w.zonePower(0) < 0.1, 'engineering starts dark');
+  const sec0 = w.stations.filter(s => s.sec === 0 && s.active), lever = sec0.find(s => s.kind === 'lever');
+  work(lever); assert.ok(!lever.done && lever.prog === 0, 'the lever worked before the pumps');
+  for (const s of sec0.filter(s => s.kind === 'pump')) { work(s); assert.ok(s.done, 'a pump did not come back'); }
+  assert.equal(w.doorLock[L.sections[0].bulkOut], 1);
+  work(lever); assert.ok(lever.done && w.secDone, 'the reactor is not running');
+  assert.equal(w.zonePower(0), 1, 'the lights did not come back'); assert.equal(w.doorLock[L.sections[0].bulkOut], 0, 'the bulkhead to the cargo deck is open');
+  run(w, [b], 3); assert.equal(w.sec, 0, 'it shuts only once everybody is through');
+  go(33, 16); run(w, [b], 3);
+  assert.equal(w.sec, 1); assert.equal(w.doorLock[L.sections[0].bulkOut], 1); assert.equal(w.doorWant[L.sections[0].bulkOut], 0, 'and then it shuts behind them');
+  // the cargo deck: the crew tags
+  assert.equal(w.tags.length, CFG.TAGS);
+  for (let i = 0; i < w.tags.length; i++) { assert.ok(!w.secDone); b.x = w.tags[i].x + 0.8; b.z = w.tags[i].z; b.act('T', i); run(w, [b], 0.5); }
+  assert.ok(w.secDone); go(62, 16); run(w, [b], 3); assert.equal(w.sec, 2);
+  // the crew deck: three terminals
+  const terms = w.stations.filter(s => s.sec === 2 && s.active); assert.equal(terms.length, 3);
+  for (const s of terms) work(s);
+  assert.ok(w.secDone); go(92, 16); run(w, [b], 3); assert.equal(w.sec, 3);
+  // the command deck: the uplink on the bridge, then the pod
+  assert.equal(w.lift.state, LIFT.LOCKED);
+  work(w.stations.find(s => s.kind === 'uplink'));
   assert.equal(w.lift.state, LIFT.READY);
-  b.x = L.lift.console.x + 2; b.z = L.lift.console.z; b.act('L'); run(w, [b], 0.5);
+  b.x = L.lift.console.x + 1.6; b.z = L.lift.console.z + 0.5; b.act('L'); run(w, [b], 0.5);
   assert.equal(w.lift.state, LIFT.CALLED);
   run(w, [b], w.liftWait + 1);
-  assert.equal(w.lift.state, LIFT.ARRIVED);
-  assert.equal(w.doorWant[L.lift.gateId], 1);
+  assert.equal(w.lift.state, LIFT.ARRIVED); assert.equal(w.doorWant[L.lift.gateId], 1);
   b.x = L.lift.x; b.z = L.lift.z; run(w, [b], 6);
   assert.equal(w.phase, PH.END); assert.equal(w.result.win, 1); assert.equal(b.p.status, ST.OUT);
+});
+
+test('a station has to be stood at and held, makes a noise while it is worked, and only counts in the crew\'s section', () => {
+  const w = new World(L, 5), b = new Bot(w, 'a', 'A'); w.startMatch(-99); w.incT = 1e9; w.creature.update = () => {};
+  const pump = w.stations.find(s => s.kind === 'pump'), s0 = L.stations[pump.id];
+  b.x = s0.ax + 6; b.z = s0.az; b.ws = pump.id; run(w, [b], 2); assert.equal(pump.prog, 0, 'worked from across the room');
+  b.x = s0.ax; b.z = s0.az; let loud = 0; run(w, [b], 2, () => { for (const n of w.noises) if (n.kind === 'pump') loud++; });
+  assert.ok(pump.prog > 0.3 && pump.prog < 0.5, `two seconds of a five-second job (${pump.prog})`); assert.ok(loud >= 1, 'a pump coming back is quiet');
+  b.ws = -1; run(w, [b], 2); assert.ok(pump.prog > 0.3, 'letting go loses what was done');
+  const term = w.stations.find(s => s.kind === 'terminal' && s.active), s2 = L.stations[term.id];
+  b.x = s2.ax; b.z = s2.az; b.ws = term.id; run(w, [b], 3); assert.equal(term.prog, 0, 'a terminal on a deck nobody has reached');
 });
 
 test('a tag cannot be taken from across the room, or twice', () => {
@@ -130,13 +159,15 @@ test('no two matches are set up alike, and every player still agrees on each one
   for (let seed = 1; seed <= 400; seed++) {
     const a = layoutMatch(L, seed), b = layoutMatch(L, seed);
     assert.deepEqual(a, b);
-    assert.ok(a.sealed.length >= 3 && a.sealed.length <= 6, `seed ${seed}: ${a.sealed.length} doors sealed`);
+    assert.ok(a.sealed.length >= 3 && a.sealed.length <= 7, `seed ${seed}: ${a.sealed.length} doors sealed`);
     assert.equal(a.zones.length, ZONES.length);
     assert.ok(a.zones.every(z => z === PWR.DEAD || z === PWR.FAILING || z === PWR.ON));
-    assert.ok(a.zones.filter(z => z === PWR.DEAD).length <= 2, 'never more than two circuits dead');
+    assert.equal(a.zones[0], PWR.DEAD, 'engineering is dark until the reactor runs');
+    assert.ok(a.zones.slice(1).filter(z => z === PWR.DEAD).length <= 2, 'never more than two other circuits dead');
+    assert.equal(a.stations.filter(i => L.stations[i].kind === 'terminal').length, 3, 'three terminals hold the codes');
     assert.ok(a.trait >= 0 && a.trait < TRAITS.length);
-    assert.ok(a.wake >= 12 && a.wake <= 28); assert.ok(a.liftWait >= 38 && a.liftWait <= 55);
-    for (const d of a.sealed) { assert.ok(!L.doors[d].gate, 'the lift gate is never sealed'); assert.equal(a.doorsOpen[d], 0, 'a sealed door starts shut'); sealedDoors.add(d); }
+    assert.ok(a.wake >= 20 && a.wake <= 40); assert.ok(a.liftWait >= 38 && a.liftWait <= 55);
+    for (const d of a.sealed) { assert.ok(!L.doors[d].gate && L.doors[d].bulk < 0, 'the pod hatch and the bulkheads are never sealed'); assert.equal(a.doorsOpen[d], 0, 'a sealed door starts shut'); sealedDoors.add(d); }
     traits.add(a.trait); power.add(a.zones.join('')); sealedCounts.add(a.sealed.length); itemCounts.add(a.items.length);
   }
   assert.equal(traits.size, TRAITS.length, 'every kind of creature turns up');
@@ -187,9 +218,9 @@ test('a sealed door cannot be opened by anyone, and the creature never goes thro
 
 test('a tripped circuit goes dark and comes back by itself; a blackout takes every circuit', () => {
   const w = new World(L, 5), b = new Bot(w, 'a', 'A'); w.startMatch(-8); w.creature.update = () => {};
-  const cell = L.idx(13, 24), z = L.zoneOf[cell];
-  assert.equal(ZONES[z], 'west wing'); assert.equal(w.zonePower(z), 1);
-  const lit = w.litAt(cell); assert.ok(lit > 0.2, 'the dock is lit');
+  const cell = L.idx(4, 16), z = L.zoneOf[cell];
+  assert.equal(ZONES[z], 'engineering'); assert.equal(w.zonePower(z), 1);
+  const lit = w.litAt(cell); assert.ok(lit > 0.2, 'the airlock is lit');
   assert.ok(w.tripZone(z, 5)); assert.ok(w.zonePower(z) < 0.1); assert.ok(w.litAt(cell) < lit * 0.1);
   assert.equal(w.powerMask(), 1 << z); assert.ok(!w.tripZone(z, 5), 'it cannot trip twice');
   run(w, [b], 6); assert.equal(w.zonePower(z), 1); assert.equal(w.powerMask(), 0);
@@ -202,11 +233,11 @@ test('a dead circuit stays dead, and the dark there hides someone without a lamp
   let seed = 1, lay; for (;; seed++) { lay = layoutMatch(L, seed); if (lay.zones[0] === PWR.DEAD) break; }
   const w = new World(L, 5), b = new Bot(w, 'a', 'A'); w.startMatch(seed);
   assert.ok(w.zonePower(0) < 0.1); assert.ok(!w.tripZone(0, 5), 'nothing left to trip');
-  // the same spot in the dock, with the power on and off: how fast the creature becomes sure of someone standing there
+  // the same spot in the engineering spine, with the power on and off: how fast the creature becomes sure of someone standing there
   const rate = (s, light) => {
     const w2 = new World(L, 5), b2 = new Bot(w2, 'a', 'A'); w2.startMatch(s); w2.incT = 1e9; const c = w2.creature; Object.assign(c.tr, { sight: 1, cone: 0.25 });      // the same eyes each time: this is about the light
-    w2.time = 60; c.state = CS.ROAM; c.x = 15.5 * T; c.z = 24.5 * T; c.yaw = Math.PI / 2; c.pauseT = 99; c.path = null;       // looking west across the dock
-    w2.doorWant.fill(0); b2.x = 11.5 * T; b2.z = 24.5 * T; b2.light = light; b2.tick(1 / 30); w2.input('a', { x: b2.x, z: b2.z, yaw: 0, pitch: 0, f: light ? 2 : 0, lk: -1, rv: -1, acts: [] });
+    w2.time = 60; c.state = CS.ROAM; c.x = 18.5 * T; c.z = 16.5 * T; c.yaw = Math.PI / 2; c.pauseT = 99; c.path = null;       // looking west along the spine
+    w2.doorWant.fill(0); b2.x = 12.5 * T; b2.z = 16.5 * T; b2.light = light; b2.tick(1 / 30); w2.input('a', { x: b2.x, z: b2.z, yaw: 0, pitch: 0, f: light ? 2 : 0, lk: -1, rv: -1, acts: [] });
     c.sense(0.1); return c.aware.get('a') || 0;
   };
   const dark = rate(seed, false), lit = rate(-seed, false), lamp = rate(seed, true);
@@ -218,7 +249,7 @@ test('doors that open and shut by themselves leave sealed ones alone, and the cr
   let seed = 1; while (layoutMatch(L, seed).sealed.length < 4) seed++;
   const w = new World(L, 5), b = new Bot(w, 'a', 'A'); w.startMatch(seed); w.incT = 1e9;
   const c = w.creature; w.time = 60; c.state = CS.ROAM; c.pauseT = 99;
-  b.x = 34.5 * T; b.z = 13 * T; b.tick(0.03);
+  b.x = 16.5 * T; b.z = 16.5 * T; b.tick(0.03);
   const before = Array.from(w.doorWant), n = w.doorFault(b.p);
   assert.ok(n >= 2, 'nothing happened');
   let changed = 0; for (let d = 0; d < before.length; d++) if (before[d] !== w.doorWant[d]) { changed++; assert.ok(!w.doorSeal[d] && !L.doors[d].gate); }
@@ -226,7 +257,7 @@ test('doors that open and shut by themselves leave sealed ones alone, and the cr
   run(w, [b], 2); assert.equal(c.state, CS.ROAM, 'it came to look');
 });
 
-test('while the borehole is shifting the creature hears half as far', () => {
+test('while the hull is shuddering the creature hears half as far', () => {
   const heard = quake => {
     const w = new World(L, 5), b = new Bot(w, 'a', 'A'); w.startMatch(-8); w.incT = 1e9; const c = w.creature;
     w.time = 60; c.state = CS.ROAM; c.x = 13.5 * T; c.z = 24.5 * T; c.pauseT = 99; c.path = null; if (quake) w.quake();
@@ -261,8 +292,8 @@ test('a snapshot carries the power state and the set-up across a change of host'
 // ---------------------------------------------------------------------------------------------- breakers
 test('a breaker resets a tripped circuit, ends a blackout, and is loud', () => {
   const w = new World(L, 5), b = new Bot(w, 'a', 'A'); w.startMatch(-8); w.incT = 1e9; const c = w.creature;
-  w.time = 60; c.state = CS.ROAM; c.pauseT = 99; c.path = null; c.x = 13.5 * T; c.z = 27.5 * T;
-  const bk = L.breakers[0]; assert.equal(ZONES[bk.zone], 'west wing');
+  w.time = 60; c.state = CS.ROAM; c.pauseT = 99; c.path = null; c.x = 16.5 * T; c.z = 16.5 * T;
+  const bk = L.breakers[0]; assert.equal(ZONES[bk.zone], 'engineering');
   b.x = bk.ax; b.z = bk.az; b.act('B', 0); run(w, [b], 0.2);
   assert.ok(!w.events.some(e => e[1] === 'breaker'), 'with the power on there is nothing for it to do');
   w.tripZone(0, 60); assert.ok(w.zonePower(0) < 0.1);

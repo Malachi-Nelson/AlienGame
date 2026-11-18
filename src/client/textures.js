@@ -243,7 +243,7 @@ export function waySign(dir) {
   const c = makeCanvas(256, 60), x = c.getContext('2d');
   x.fillStyle = '#100c04'; x.fillRect(0, 0, 256, 60); x.strokeStyle = '#8a6a1c'; x.lineWidth = 2; x.strokeRect(2, 2, 252, 56);
   x.fillStyle = '#ffc24a'; x.font = '700 27px "Arial Narrow", Arial, sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.letterSpacing = '2px';
-  x.fillText('DOCK · LIFT', 128 + dir * -17, 32);
+  x.fillText('ESCAPE POD', 128 + dir * -17, 32);
   const ax = dir > 0 ? 226 : 30; x.beginPath(); x.moveTo(ax + dir * 16, 30); x.lineTo(ax - dir * 10, 14); x.lineTo(ax - dir * 10, 46); x.closePath(); x.fill();
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
 }

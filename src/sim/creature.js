@@ -8,6 +8,8 @@
 //             and whether a duct is worth walking round to the far end of.
 //   pacing    a director keeps count of how hard the crew has been pressed, calls it off for a while after a long hunt,
 //             and leans it back towards them when things have been quiet for too long.
+//   vents     it can climb into the ship's vents, crawl unseen to another hatch, and drop out there: to cut across a
+//             section, to come at someone from above, to follow the crew through a bulkhead that has shut on it.
 import { T, W, H, C } from '../level.js';
 import { sight, Pather, distField, clearWalk, nearestWalk } from '../nav.js';
 import { CFG } from '../config.js';
@@ -16,7 +18,8 @@ import { ST, CS, LIFT } from './defs.js';
 
 const N = W * H;
 const EYE = CFG.creature.eye;
-const KIND_W = { run: 1.0, walk: 0.7, crouch: 0.45, door: 0.8, locker: 0.9, tag: 0.9, scan: 0.85, decoy: 1.25, thrower: 1.0, revive: 1.1, klaxon: 0.9, breath: 0.75, gasp: 1.2, breaker: 1.1 };
+const KIND_W = { run: 1.0, walk: 0.7, crouch: 0.45, door: 0.8, locker: 0.9, tag: 0.9, scan: 0.85, decoy: 1.25, thrower: 1.0, revive: 1.1, klaxon: 0.9, breath: 0.75, gasp: 1.2, breaker: 1.1, work: 0.95, pump: 1.05, bulkhead: 0.8 };
+const V_WALK = 0, V_CLIMB = 1, V_CRAWL = 2, V_DROP = 3;       // going into the vents: walking to the hatch, climbing in, crawling, dropping out
 const NONE = [];
 
 export class Creature {
@@ -33,7 +36,7 @@ export class Creature {
     this.spread = new Uint8Array(N);
     this.lockersAt = new Map();
     for (const k of L.lockers) { if (!this.lockersAt.has(k.access)) this.lockersAt.set(k.access, []); this.lockersAt.get(k.access).push(k.id); }
-    this.genRoom = L.rooms.findIndex(r => r.name === 'Generator Hall');
+    this.genRoom = L.rooms.findIndex(r => r.name === 'Reactor Room');
     this.learn = { hide: 0.15, decoy: 1, duct: 0.45 };
     this.reset(L.idx(L.creatureSpawns[0].cx, L.creatureSpawns[0].cz));
   }
@@ -45,9 +48,10 @@ export class Creature {
     for (let i = 0; i < N; i++) {
       const d = L.doorAt[i], shut = d >= 0 && w.doorSeal[d];
       this.walk[i] = L.walkC[i] && !shut ? 1 : 0;
-      // where prey can be without being in plain view: any floor or duct, but not the lift shaft
+      // where prey can be without being in plain view: any floor or duct, but not the pod
       this.spread[i] = L.walkP[i] && !shut && L.cells[i] !== C.LIFT && !(d >= 0 && L.doors[d].gate) ? 1 : 0;
     }
+    this.syncWalk();
     this.x = L.cx(cell); this.z = L.cz(cell); this.yaw = 0; this.vx = this.vz = this.speed = 0;
     this.state = CS.IDLE; this.stateT = 0;
     this.path = null; this.pathI = 0;
@@ -61,14 +65,31 @@ export class Creature {
     this.lampsOut = false; this.forcing = false; this.doorT = 0;
     this.baitT = 0; this.baitFor = null; this.ambushT = 0;
     this.rearT = 0; this.burstT = 0; this.heardLocker = -1;      // rearing up before a charge; the first rush of that charge; a locker it has heard breathing from
+    this.ventPhase = V_WALK; this.ventA = -1; this.ventB = -1; this.ventWhy = ''; this.ventRoute = null; this.ventI = 0; this.ventStuck = 0; this.ventCool = 25; this.after = null;
     this.pressure = 0; this.backoff = 0; this.quiet = 0; this.hint = null; this.klaxT = 0;
     this.aware.clear(); this.seenAt.clear(); this.decoyCall.clear(); this.poiSeen.fill(-60); this.heat.fill(0);
     this.learn.hide = this.tr.hide0; this.learn.decoy = 1; this.learn.duct = 0.45;
-    this.stats = { hunts: 0, catches: 0, lockerChecks: 0, lockerFinds: 0, searches: 0 };
+    this.stats = { hunts: 0, catches: 0, lockerChecks: 0, lockerFinds: 0, searches: 0, vents: 0 };
   }
 
   cell() { return this.L.cellOf(this.x, this.z); }
-  aggr() { const w = this.w; return clamp01(w.tags.length ? w.tagsTaken / w.tags.length : 0) + (w.lift.state >= LIFT.READY ? 0.15 : 0); }
+  aggr() { const w = this.w; return clamp01(w.progress()) + (w.lift.state >= LIFT.READY ? 0.15 : 0); }
+  // out of sight up in the vents, or on its way in or out of a hatch
+  hidden() { return this.state === CS.VENT && this.ventPhase === V_CRAWL; }
+  climbing() { return this.state === CS.VENT && (this.ventPhase === V_CLIMB || this.ventPhase === V_DROP); }
+  // A bulkhead that is shut is a wall to it; one that has opened is a way through. Nothing else changes in a match.
+  syncWalk() {
+    const L = this.L, w = this.w, here = this.L.cellOf(this.x || 0, this.z || 0);
+    for (const d of L.doors) {
+      if (d.bulk < 0) continue;
+      const shut = w.doorLock[d.id] && !d.cells.includes(here);
+      for (const c of d.cells) { this.walk[c] = shut ? 0 : 1; this.spread[c] = shut ? 0 : 1; }
+    }
+    this.path = null;
+  }
+  // The crew has moved on into the next section and the bulkhead has shut behind them. If it is still on the wrong side,
+  // it will go round through the vents; either way it gives them a moment first.
+  onSection(sec) { this.backoff = Math.max(this.backoff, 10); this.hint = null; this.ventCool = 0; if (this.L.secOf[this.cell()] !== sec && this.state !== CS.VENT) { this.target = null; this.enter(CS.ROAM); } }
   inGen(x, z) { const c = this.L.cellOf(x, z); return c >= 0 && c < N && this.L.roomId[c] === this.genRoom; }
   enter(state) { this.state = state; this.stateT = 0; this.doorT = 0; this.forcing = false; if (state !== CS.AMBUSH && state !== CS.BAIT) this.lampsOut = false; }
   stop(dt) { this.speed = approach(this.speed, 0, 16 * dt); this.vx = this.vz = 0; }
@@ -77,14 +98,17 @@ export class Creature {
   // ------------------------------------------------------------------------------------------------ one tick
   update(dt) {
     const w = this.w;
-    this.stateT += dt;
+    this.stateT += dt; this.ventCool -= dt;
     if (this.state === CS.IDLE) { this.stop(dt); w.noises.length = 0; if (w.time > w.wake) { this.enter(CS.ROAM); w.event('wake'); } return; }
-    this.sense(dt);
+    const deep = this.state === CS.VENT && this.ventPhase !== V_WALK;          // in a hatch or above the ceiling: no eyes for anyone
+    if (!deep) this.sense(dt); else for (const p of w.players.values()) { p.visible = false; const a = Math.max(0, (this.aware.get(p.id) || 0) - 0.22 * dt); this.aware.set(p.id, a); p.aware = a; }
     for (const n of w.noises) this.hear(n);
     w.noises.length = 0;
     this.direct(dt);
+    // left behind when a bulkhead shut: through the vents after them
+    if (!deep && this.state !== CS.ATTACK && this.state !== CS.LOCKER && this.L.secOf[this.cell()] !== w.sec) { if (this.state !== CS.VENT || this.ventWhy !== 'section') this.followCrew(); }
 
-    if (this.state !== CS.HUNT && this.state !== CS.ATTACK && this.state !== CS.LOCKER) {
+    if (!deep && this.state !== CS.HUNT && this.state !== CS.ATTACK && this.state !== CS.LOCKER) {
       let best = null, ba = 0;
       for (const p of w.players.values()) { if (p.status !== ST.ALIVE || !p.visible) continue; const a = this.aware.get(p.id) || 0; if (a > ba) { ba = a; best = p; } }
       if (best && ba >= 1) this.startHunt(best);
@@ -100,6 +124,7 @@ export class Creature {
       case CS.AMBUSH: this.ambushStep(dt); break;
       case CS.BAIT: this.baitStep(dt); break;
       case CS.LOCKER: this.lockerStep(dt); break;
+      case CS.VENT: this.ventStep(dt); break;
     }
   }
 
@@ -141,7 +166,7 @@ export class Creature {
   hear(n) {
     const L = this.L, w = this.w;
     const d = Math.hypot(n.x - this.x, n.z - this.z);
-    if (n.kind === 'klaxon') {           // the lift alarm carries through the whole outpost, and it comes
+    if (n.kind === 'klaxon') {           // the escape pod's alarm carries through the whole ship, and it comes
       this.klaxT -= 1; if (this.klaxT > 0) return; this.klaxT = 3;
       if (this.state === CS.HUNT || this.state === CS.ATTACK || this.state === CS.LOCKER || this.state === CS.SUSPECT) return;
       const ex = n.x + (w.rand() * 2 - 1) * 8, ez = n.z + (w.rand() * 2 - 1) * 8;
@@ -149,7 +174,14 @@ export class Creature {
       this.investigate(ex, ez, 0.6, 'klaxon', 0); return;
     }
     let R = n.r * this.tr.hear * (this.state === CS.BAIT ? 1.6 : this.state === CS.AMBUSH ? 1.3 : 1);
-    if (w.rumbleT > 0) R *= 0.5;                        // the borehole is shifting: nothing carries far over that
+    if (this.state === CS.VENT && this.ventPhase !== V_WALK) {      // up in the vents it hears through the grilles, a little less well
+      if (this.ventPhase !== V_CRAWL || L.secOf[L.cellOf(n.x, n.z)] !== w.sec) return;
+      R *= 0.8; if (w.rumbleT > 0) R *= 0.5;
+      const d0 = Math.hypot(n.x - this.x, n.z - this.z); if (d0 > R) return;
+      const wgt = (1 - d0 / R) * (KIND_W[n.kind] || 0.7); if (wgt >= 0.2) this.ventToward(n.x, n.z, wgt, n.kind === 'decoy' ? 'decoy' : n.kind, n.id || 0);
+      return;
+    }
+    if (w.rumbleT > 0) R *= 0.5;                        // the hull is groaning: nothing carries far over that
     if (this.inGen(n.x, n.z)) R *= 0.6;                 // the generators drown things out
     if (this.inGen(this.x, this.z)) R *= 0.75;
     if (d > R) return;
@@ -162,7 +194,7 @@ export class Creature {
       if (!call) { x = n.ox + ((n.id * 7919) % 9) - 4; z = n.oz + ((n.id * 104729) % 9) - 4; kind = 'thrower'; }   // it has worked out what a sounder means
     }
     const weight = loud * (KIND_W[kind] || 0.7);
-    if (n.locker >= 0) { this.lockerOcc[n.locker] += 0.7 * loud + 0.2; this.heardLocker = n.locker; }      // someone breathing behind a locker door: it knows which door
+    if (n.locker >= 0) { this.lockerOcc[n.locker] += 0.7 * loud + 0.2; this.heardLocker = n.locker; this.lockerChecked[n.locker] = 0; }      // someone breathing behind a locker door: it knows which door, and that it is worth opening again
     const err = 0.3 + 3 * (1 - loud);
     x = clamp(x + (w.rand() * 2 - 1) * err, T, (W - 1) * T); z = clamp(z + (w.rand() * 2 - 1) * err, T, (H - 1) * T);
     const room = L.roomId[L.cellOf(x, z)]; if (room >= 0) this.heat[room] += weight;
@@ -171,6 +203,7 @@ export class Creature {
         if (n.src && n.src === this.target && this.lostT > 0) this.last = { x, z, vx: 0, vz: 0 };   // follows the footsteps it can no longer see
         return;
       case CS.ATTACK: case CS.LOCKER: case CS.SUSPECT: return;
+      case CS.VENT: if (weight >= 0.3) { this.ventPhase = V_WALK; this.investigate(x, z, weight, kind, n.id); } return;       // on its way to a hatch: a good enough reason to stay down here
       case CS.SEARCH: this.seedOcc(x, z, weight * 0.8, 2); if (weight >= 0.45) this.investigate(x, z, weight, kind, n.id); return;
       case CS.AMBUSH: this.faceTo = yawOf(x - this.x, z - this.z); if (weight >= 0.7) this.investigate(x, z, weight, kind, n.id); return;
       case CS.BAIT: if (weight >= 0.12) this.investigate(x, z, Math.max(weight, 0.9), kind, n.id); return;
@@ -212,7 +245,7 @@ export class Creature {
     }
     // nobody gets to sit in a locker for the whole match
     for (const p of alive) if (p.hidden >= 0 && p.hidFor > 55) { p.hidFor = 30; this.lockerOcc[p.hidden] += 0.6; this.hint = { x: p.x, z: p.z, t: w.time }; if (this.state === CS.ROAM) this.path = null; }
-    if (w.lift.state === LIFT.CALLED || w.lift.state === LIFT.ARRIVED) { if (!this.hint || w.time - this.hint.t > 6) this.hint = { x: this.L.lift.x + 12, z: this.L.lift.z, t: w.time }; this.backoff = 0; }
+    if (w.lift.state === LIFT.CALLED || w.lift.state === LIFT.ARRIVED) { if (!this.hint || w.time - this.hint.t > 6) this.hint = { x: this.L.lift.alarm.x, z: this.L.lift.alarm.z, t: w.time }; this.backoff = 0; }
   }
 
   // ------------------------------------------------------------------------------------------------ patrol
@@ -237,7 +270,9 @@ export class Creature {
     const w = this.w, L = this.L, me = this.cell(), a = this.aggr();
     distField(this.walk, me, this.dist);
     let hmax = 1e-3; for (const h of this.heat) if (h > hmax) hmax = h;
-    const ga = Math.max(a, this.tr.guard), guard = new Set(); if (ga > 0.2) for (const t of w.tags) if (!t.taken) guard.add(L.roomId[t.cell]);
+    // what it guards: whatever the crew still has to get to in this section
+    const ga = Math.max(a, this.tr.guard), guard = new Set();
+    if (ga > 0.2) { for (const t of w.tags) if (!t.taken) guard.add(L.roomId[t.cell]); for (const st of w.stations) if (st.sec === w.sec && st.active && !st.done) guard.add(L.roomId[L.cellOf(st.ax, st.az)]); }
     const alive = []; for (const p of w.players.values()) if (p.status === ST.ALIVE) alive.push(p);
     let best = -1, bs = -1e9;
     for (let i = 0; i < L.pois.length; i++) {
@@ -251,6 +286,8 @@ export class Creature {
     }
     if (best < 0) { this.pauseT = 1; return; }
     this.roamPoi = best;
+    // a long way to walk: sometimes it goes through the ceiling instead, and more often as the crew gets further
+    if (this.dist[L.pois[best].cell] > 20 && this.ventCool <= 0 && w.rand() < 0.3 + 0.35 * a && this.ventTo(L.pois[best].x, L.pois[best].z, 'roam', this.dist[L.pois[best].cell] * T * 0.65)) return;
     this.path = this.pather.find(me, L.pois[best].cell, w.doorOpen); this.pathI = this.path && this.path.length > 1 ? 1 : 0;
     if (!this.path) { this.poiSeen[best] = w.time; this.pauseT = 0.5; }
   }
@@ -448,6 +485,8 @@ export class Creature {
     }
     this.occ.fill(0); this.searchLeft = 0; this.searchFor = null; this.path = null; this.pauseT = 0;
     this.enter(CS.ROAM);
+    // and sometimes, having found nothing, it goes up into the ceiling and comes down somewhere else
+    if (this.ventCool <= 0 && w.rand() < 0.3) { const vs = L.vents.filter(v => v.sec === w.sec && Math.hypot(v.x - this.x, v.z - this.z) > 20); if (vs.length) { const v = vs[Math.floor(w.rand() * vs.length)]; this.ventTo(v.x, v.z, 'roam', 1e9); } }
   }
   pickSearchGoal() {
     const L = this.L, w = this.w, me = this.cell(), occ = this.occ;
@@ -528,7 +567,7 @@ export class Creature {
     // a shut door in the way gets forced, which takes a moment and can be heard
     for (const reach of [0.4, 1.25]) {
       const dc = L.doorAt[L.cellOf(this.x + dx * reach, this.z + dz * reach)];
-      if (dc >= 0 && !w.doorSeal[dc] && w.doorOpen[dc] < 0.85) {
+      if (dc >= 0 && !w.doorSeal[dc] && !w.doorLock[dc] && w.doorOpen[dc] < 0.85) {
         this.stop(dt); this.forcing = true; this.doorT += dt;
         if (w.doorWant[dc] === 0 && this.doorT > (this.state === CS.HUNT ? 0.55 : 0.9)) w.forceDoor(dc);
         return;
@@ -542,5 +581,78 @@ export class Creature {
     this.vx = dx * this.speed; this.vz = dz * this.speed;
     const nx = this.x + this.vx * dt, nz = this.z + this.vz * dt;
     if (this.walk[L.cellOf(nx, nz)]) { this.x = nx; this.z = nz; } else { this.path = null; this.stop(dt); }
+  }
+
+  // ------------------------------------------------------------------------------------------------ the vents
+  // Plans a way through the vents to a point in the crew's section: the hatch it can walk to soonest, and the hatch nearest
+  // where it wants to be. Only worth it if the crawl is shorter than `walkLen` metres of walking. Returns whether it went.
+  ventTo(x, z, why, walkLen) {
+    const L = this.L, w = this.w, nv = L.vents.length, here = this.cell(), sec = w.sec;
+    if (!this.walk[here]) return false;
+    distField(this.walk, here, this.dist);
+    let a = -1, ad = 1e9; for (const v of L.vents) { const d = this.dist[v.cell]; if (d >= 0 && d < 14 && d < ad) { ad = d; a = v.id; } }
+    let b = -1, bd = 1e9; for (const v of L.vents) { if (v.sec !== sec) continue; const d = Math.hypot(v.x - x, v.z - z); if (d < bd) { bd = d; b = v.id; } }
+    if (a < 0 || b < 0 || a === b || bd > 14) return false;
+    if (ad * T + L.ventLen[a * nv + b] + bd > walkLen) return false;
+    return this.goVent(a, b, why);
+  }
+  // left behind a bulkhead: up into the vents and over to wherever the crew is now
+  followCrew() {
+    const L = this.L, w = this.w; let px = null, pz = null;
+    for (const p of w.players.values()) if (p.status === ST.ALIVE && L.secOf[L.cellOf(p.x, p.z)] === w.sec) { px = p.x; pz = p.z; break; }
+    const sc = L.sections[w.sec], tx = px !== null ? px + (w.rand() * 2 - 1) * 14 : L.cx(L.idx((sc.x0 + sc.x1) >> 1, 16)), tz = pz !== null ? pz + (w.rand() * 2 - 1) * 10 : 16 * T;
+    if (this.ventTo(tx, tz, 'section', 1e9)) return;
+    // nowhere it can walk to a hatch from (it is stuck in a doorway, say): it simply comes out of the nearest one to the crew
+    this.ventStuck += 1;
+    if (this.ventStuck > 30) { let b = -1, bd = 1e9; for (const v of L.vents) { if (v.sec !== w.sec) continue; const d = Math.hypot(v.x - tx, v.z - tz); if (d < bd) { bd = d; b = v.id; } } if (b >= 0) { this.x = L.vents[b].x; this.z = L.vents[b].z; this.ventStuck = 0; this.ventA = this.ventB = b; this.ventWhy = 'section'; this.enter(CS.VENT); this.ventPhase = V_DROP; this.stateT = 0; w.event('ventout', b); } }
+  }
+  goVent(a, b, why) {
+    const L = this.L;
+    this.ventA = a; this.ventB = b; this.ventWhy = why; this.ventRoute = null; this.after = null;
+    this.path = this.pather.find(this.cell(), L.vents[a].cell, this.w.doorOpen); this.pathI = this.path && this.path.length > 1 ? 1 : 0;
+    if (!this.path && this.cell() !== L.vents[a].cell) return false;
+    this.enter(CS.VENT); this.ventPhase = V_WALK; this.ventCool = 20 + this.w.rand() * 25;
+    return true;
+  }
+  // Heard something while crawling: it changes course for the hatch nearest the sound, if there is one near enough.
+  ventToward(x, z, weight, kind, id) {
+    const L = this.L, w = this.w, nv = L.vents.length;
+    let b = -1, bd = 1e9; for (const v of L.vents) { if (v.sec !== w.sec) continue; const d = Math.hypot(v.x - x, v.z - z); if (d < bd) { bd = d; b = v.id; } }
+    if (b < 0 || bd > 12) return;
+    if (b !== this.ventB) {
+      // it is somewhere between two hatches: it carries on, or turns back, whichever is the shorter way round
+      const rt = this.ventRoute, i = rt ? Math.min(this.ventI, rt.length - 1) : 0, cand = rt ? [rt[i], rt[Math.max(0, i - 1)]] : [this.ventA];
+      let from = cand[0], best = 1e9; for (const k of cand) { const v = L.vents[k], l = Math.hypot(v.x - this.x, v.z - this.z) + L.ventLen[k * nv + b]; if (l < best) { best = l; from = k; } }
+      this.ventB = b; this.ventRoute = this.route(from, b); this.ventI = 0;
+    }
+    this.ventWhy = 'noise'; this.after = { x, z, w: weight, kind, id };
+  }
+  route(a, b) { const L = this.L, nv = L.vents.length, out = [a]; let c = a; for (let g = 0; g < 64 && c !== b; g++) { c = L.ventNext[c * nv + b]; if (c < 0) break; out.push(c); } return out; }
+  ventStep(dt) {
+    const L = this.L, w = this.w;
+    if (this.ventPhase === V_WALK) {                    // walking to the hatch, as it would anywhere
+      if (this.path) { if (!this.follow(dt, 2.6 + 0.8 * this.aggr(), 6)) return; }
+      const v = L.vents[this.ventA];
+      if (Math.hypot(v.x - this.x, v.z - this.z) > 1.2) { this.path = this.pather.find(this.cell(), v.cell, w.doorOpen); this.pathI = this.path && this.path.length > 1 ? 1 : 0; if (!this.path) this.enter(CS.ROAM); return; }
+      this.stop(dt); this.x = v.x; this.z = v.z; this.ventPhase = V_CLIMB; this.stateT = 0; this.stats.vents++; w.event('ventin', this.ventA); return;
+    }
+    this.stop(dt);
+    if (this.ventPhase === V_CLIMB) { if (this.stateT >= CFG.creature.climb) { this.ventPhase = V_CRAWL; this.stateT = 0; this.ventRoute = this.route(this.ventA, this.ventB); this.ventI = 1; } return; }
+    if (this.ventPhase === V_CRAWL) {                   // up above the ceiling: hatch to hatch, unseen, though not unheard
+      let move = CFG.creature.vent * dt;
+      while (move > 0 && this.ventRoute && this.ventI < this.ventRoute.length) {
+        const v = L.vents[this.ventRoute[this.ventI]], dx = v.x - this.x, dz = v.z - this.z, d = Math.hypot(dx, dz);
+        if (d <= move) { this.x = v.x; this.z = v.z; move -= d; this.ventI++; continue; }
+        this.x += dx / d * move; this.z += dz / d * move; this.yaw = angleTo(this.yaw, yawOf(dx, dz), 8 * dt); this.speed = CFG.creature.vent; move = 0;
+      }
+      if (!this.ventRoute || this.ventI >= this.ventRoute.length) { const v = L.vents[this.ventB]; this.x = v.x; this.z = v.z; this.ventPhase = V_DROP; this.stateT = 0; this.speed = 0; w.event('ventout', this.ventB); }
+      return;
+    }
+    // dropping out of the hatch, then on with whatever it came for
+    if (this.stateT < CFG.creature.drop) return;
+    const why = this.ventWhy, after = this.after; this.after = null; this.ventWhy = ''; this.ventStuck = 0;
+    this.pauseT = 0.6 + w.rand(); this.lookT = 0; this.baseYaw = this.yaw; this.path = null;
+    if (after) return this.investigate(after.x, after.z, after.w, after.kind, after.id);
+    this.enter(CS.ROAM); if (why === 'section') this.hint = null;
   }
 }

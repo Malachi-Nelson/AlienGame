@@ -1,5 +1,6 @@
-// Builds the outpost in three.js from the level description, and keeps the moving parts (doors, tags, sounders, the lift) in step
-// with the match. Fixed lights are worked out once per vertex at load time; only lamps and a few small lights are live.
+// Builds the ship in three.js from the level description, and keeps the moving parts (doors and bulkheads, tags, sounders,
+// stations, vent hatches, the escape pod) in step with the match. Fixed lights are worked out once per vertex at load time;
+// only lamps and a few small lights are live. Out of the hull windows there is nothing but stars and a planet below.
 import * as THREE from 'three';
 import { T, W, H, C, LOW_H, DUCT_H, lightAt, ZONES } from '../level.js';
 import { makeTextures, glowTexture, signTexture, decalSheet, waySign } from './textures.js';
@@ -101,6 +102,11 @@ class GlowGeo {
   }
 }
 
+function mergeBoxes(list) {
+  const pos = [], nor = [], idx = []; let base = 0;
+  for (const g of list) { const p = g.attributes.position, n = g.attributes.normal, ix = g.index; for (let i = 0; i < p.count; i++) { pos.push(p.getX(i), p.getY(i), p.getZ(i)); nor.push(n.getX(i), n.getY(i), n.getZ(i)); } for (let i = 0; i < ix.count; i++) idx.push(ix.getX(i) + base); base += p.count; }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3)); g.setIndex(idx); return g;
+}
 function hash3(x, y, z) { let h = Math.imul(x | 0, 374761393) ^ Math.imul(y | 0, 668265263) ^ Math.imul(z | 0, 2147483647); h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; }
 function vnoise(x, y, z) {
   const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z), fx = x - xi, fy = y - yi, fz = z - zi;
@@ -109,6 +115,33 @@ function vnoise(x, y, z) {
   return l(l(l(hash3(xi, yi, zi), hash3(xi + 1, yi, zi), sx), l(hash3(xi, yi + 1, zi), hash3(xi + 1, yi + 1, zi), sx), sy),
     l(l(hash3(xi, yi, zi + 1), hash3(xi + 1, yi, zi + 1), sx), l(hash3(xi, yi + 1, zi + 1), hash3(xi + 1, yi + 1, zi + 1), sx), sy), sz);
 }
+
+const SPACE_VS = 'varying vec3 vW; void main() { vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }';
+const SPACE_FS = `varying vec3 vW; uniform float uTime;
+float hs(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+vec3 stars(vec3 d, float sc, float thr) {
+  vec3 p = d * sc, c = floor(p), f = fract(p) - 0.5; float r = hs(c); if (r < thr) return vec3(0.0);
+  vec3 o = vec3(hs(c + 1.7), hs(c + 3.1), hs(c + 5.3)) - 0.5; float dd = length(f - o * 0.6);
+  float tw = 0.75 + 0.25 * sin(uTime * (1.0 + 3.0 * hs(c + 7.7)) + r * 40.0);
+  return vec3(smoothstep(0.09, 0.0, dd) * (r - thr) / (1.0 - thr) * tw) * mix(vec3(1.0, 0.82, 0.68), vec3(0.68, 0.84, 1.0), hs(c + 9.1));
+}
+void main() {
+  vec3 d = normalize(vW - cameraPosition);
+  vec3 col = vec3(0.0004, 0.0006, 0.0012) + stars(d, 80.0, 0.955) * 1.6 + stars(d, 210.0, 0.982) * 0.9;
+  float band = dot(d, normalize(vec3(0.25, 0.85, 0.45))); col += vec3(0.006, 0.005, 0.009) * exp(-band * band * 9.0);
+  vec3 pd = normalize(vec3(0.3, -0.62, 0.72)); float cp = dot(d, pd), R = 0.9;
+  if (cp > R - 0.02) {
+    vec3 q = (d - pd * cp) / sqrt(1.0 - R * R); float rr = length(q);
+    vec3 up = normalize(cross(pd, vec3(1.0, 0.0, 0.0))), side = cross(up, pd);
+    float lat = dot(q, up), lon = dot(q, side), z = sqrt(max(0.0, 1.0 - rr * rr));
+    vec3 n = normalize(side * lon + up * lat - pd * z);
+    float lit = clamp(dot(n, normalize(vec3(-0.75, 0.45, -0.2))), 0.0, 1.0);
+    vec3 bands = mix(vec3(0.42, 0.27, 0.16), vec3(0.62, 0.5, 0.36), 0.5 + 0.5 * sin(lat * 15.0 + sin(lon * 4.0 + lat * 6.0) * 1.6));
+    vec3 planet = bands * (0.02 + 1.1 * lit) + vec3(0.25, 0.4, 0.6) * pow(rr, 5.0) * (0.15 + lit);
+    col = mix(col, planet, smoothstep(R - 0.004, R + 0.002, cp));
+  }
+  gl_FragColor = vec4(col, 1.0);
+}`;
 
 export class Scene3D {
   constructor(L, opts = {}) {
@@ -135,13 +168,18 @@ export class Scene3D {
     this.emMat = ZONES.map(() => new THREE.MeshBasicMaterial({ color: 0x300604 }));
     this.sheet = decalSheet();
     this.mats.decal = this.baked({ map: this.sheet.tex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3, roughness: 0.6, metalness: 0.0 });
-    this.dress = null; this.signs = []; this.breakers = []; this.wallFaces = []; this.zones = null;
+    this.dress = null; this.signs = []; this.breakers = []; this.wallFaces = []; this.zones = null; this.stationsActive = null;
+    // what is outside the windows: worked out per pixel from the direction you look, so it sits at infinity
+    this.spaceMat = new THREE.ShaderMaterial({ uniforms: { uTime: { value: 0 } }, vertexShader: SPACE_VS, fragmentShader: SPACE_FS });
+    this.pit = { x: 30, z: 19 };
     this.mats.ice.normalScale.set(1.4, 1.4);
     this.doors = []; this.tags = []; this.items = []; this.decoys = new Map(); this.sprites = [];
     this.buildStatic();
     this.buildDoors();
     this.buildLift();
     this.buildBreakers();
+    this.buildStations();
+    this.buildVents();
     this.buildSigns();
     this.scene.add(new THREE.AmbientLight(0x8fb4d0, 0.3));
   }
@@ -187,7 +225,10 @@ export class Scene3D {
 
   // ------------------------------------------------------------------------------------------ everything that never moves
   buildStatic() {
-    const L = this.L, geos = new Map(), glow = new GlowGeo(), fit = ZONES.map(() => new GlowGeo()), fitF = ZONES.map(() => new GlowGeo()), emFit = ZONES.map(() => new GlowGeo()), rnd = rng32(4471);
+    const L = this.L, geos = new Map(), glow = new GlowGeo(), fit = ZONES.map(() => new GlowGeo()), fitF = ZONES.map(() => new GlowGeo()), emFit = ZONES.map(() => new GlowGeo()), rnd = rng32(4471), space = new GlowGeo();
+    // the cargo containers: each stack of tiles is one container, and one colour
+    this.contCol = new Map(); { const pal = [[0.52, 0.22, 0.14], [0.2, 0.32, 0.42], [0.55, 0.42, 0.14], [0.26, 0.36, 0.26], [0.42, 0.44, 0.46]], seen = new Set();
+      for (let i = 0; i < W * H; i++) { if (L.propKind[i] !== 'container' || seen.has(i)) continue; const st = [i], col = pal[(i * 7) % pal.length]; seen.add(i); while (st.length) { const k = st.pop(); this.contCol.set(k, col); for (const m of [k - 1, k + 1, k - W, k + W]) if (L.propKind[m] === 'container' && !seen.has(m)) { seen.add(m); st.push(m); } } } }
     const solid = n => !open(n), steel = [0.2, 0.22, 0.24], copper = [0.34, 0.24, 0.13], dull = [0.16, 0.17, 0.19];
     // where a frame (two posts and a beam) can stand: plain floor, not ice, not a doorway
     const framed = n => { const cc = L.cells[n]; return (cc === C.FLOOR || cc === C.TALL || cc === C.LOW) && L.doorAt[n] < 0 && !L.ice[n]; };
@@ -207,7 +248,9 @@ export class Scene3D {
       if (c !== C.PIT) G(fm, cx, cz).quad(L, [x0, 0, z0], [0, 0, T], [T, 0, 0], 2, 2, [cx, cz], [0, 1], [1, 0], ft);
       const ct = isIce ? [0.55, 0.62, 0.68] : c === C.DUCT ? [0.5, 0.5, 0.55] : [1, 1, 1];
       if (h < 12) G(cm, cx, cz).quad(L, [x0, h, z0], [T, 0, 0], [0, 0, T], isIce ? 4 : 2, isIce ? 4 : 2, [cx, cz], [1, 0], [0, 1], ct, isIce ? (x, y, z) => 0.5 * vnoise(x * 0.8, 7, z * 0.8) * Math.min(1, Math.min(x - x0, x0 + T - x, z - z0, z0 + T - z) * 3) : null);
-      for (const [dx, dz, org, u, ub, ud] of SIDES) {
+      const room0 = L.roomId[i] >= 0 ? L.rooms[L.roomId[i]] : null, hallC = !!room0 && room0.kind === 'hall' && c === C.FLOOR && h <= 3.6 && L.doorAt[i] < 0;
+      for (let side = 0; side < 4; side++) {
+        const [dx, dz, org, u, ub, ud] = SIDES[side];
         const n = i + dx + dz * W, nc = L.cells[n], o = org(x0, z0);
         const wall = (y0, y1, tint, mat = wm) => {
           if (y1 - y0 < 0.02) return;
@@ -215,7 +258,28 @@ export class Scene3D {
         };
         const wt = isIce ? [0.62, 0.7, 0.76] : c === C.DUCT ? [0.5, 0.5, 0.55] : c === C.LIFT ? [0.6, 0.6, 0.62] : [1, 1, 1];
         if (c === C.PIT) { if (nc !== C.PIT) wall(-30, 0, [0.45, 0.5, 0.55]); if (!open(n)) wall(0, h, wt); else if (L.ceil[n] < h - 0.01) wall(L.ceil[n], h, wt); continue; }
-        if (!open(n)) wall(0, h, wt);
+        if (!open(n)) {
+          // corridors have their top corners cut off at an angle, with a strip light along one side
+          const top = hallC ? h - 0.45 : h, nx = -dx, nz = -dz, uN = [u[0] / T, 0, u[2] / T];
+          if (hallC) {
+            G(wm, cx, cz).quad(L, [o[0], top, o[1]], u, [nx * 0.45, 0.45, nz * 0.45], 2, 1, [ub(cx, cz), top / 3.2], [ud, 0], [0, 0.2], [0.8, 0.84, 0.88]);
+            if (side === 1 || side === 3) fit[L.zoneOf[i]].quad([o[0] + nx * 0.2, top + 0.2, o[1] + nz * 0.2], u, [nx * 0.05, 0.05, nz * 0.05], [0.35, 0.55, 0.75]);
+          }
+          if ((c === C.FLOOR || c === C.LIFT) && nc === C.SOLID && this.outboard(n, dx, dz) && !this.faceTaken(cx, cz, side)) {
+            // a window in the hull: the wall round it, the sides of the opening, and space behind
+            const big = room0 && room0.name === 'Bridge', y0 = big ? 0.75 : 1.1, y1 = Math.min(big ? top - 0.3 : 2.05, top - 0.15), a0 = big ? 0.12 : 0.45, a1 = T - a0, dep = 0.3;
+            const P = (a, y, d) => [o[0] + uN[0] * a - nx * d, y, o[1] + uN[2] * a - nz * d];
+            const strip = (a, b, ya, yb) => G(wm, cx, cz).quad(L, P(a, ya, 0), [uN[0] * (b - a), 0, uN[2] * (b - a)], [0, yb - ya, 0], 1, Math.max(1, Math.round((yb - ya) / 1.07)), [ub(cx, cz) + ud * a / T, ya / 3.2], [ud * (b - a) / T, 0], [0, (yb - ya) / 3.2], wt);
+            strip(0, T, 0, y0); strip(0, T, y1, top); strip(0, a0, y0, y1); strip(a1, T, y0, y1);
+            const F = G('prop', cx, cz), fr = [0.24, 0.26, 0.28];
+            F.quad(L, P(a0, y0, 0), [uN[0] * (a1 - a0), 0, uN[2] * (a1 - a0)], [-nx * dep, 0, -nz * dep], 1, 1, [0, 0], [1, 0], [0, 0.2], fr);          // sill
+            F.quad(L, P(a1, y1, 0), [-uN[0] * (a1 - a0), 0, -uN[2] * (a1 - a0)], [-nx * dep, 0, -nz * dep], 1, 1, [0, 0], [1, 0], [0, 0.2], fr);        // head
+            F.quad(L, P(a0, y0, 0), [-nx * dep, 0, -nz * dep], [0, y1 - y0, 0], 1, 1, [0, 0], [0.2, 0], [0, 1], fr);                                      // jambs
+            F.quad(L, P(a1, y0, dep), [nx * dep, 0, nz * dep], [0, y1 - y0, 0], 1, 1, [0, 0], [0.2, 0], [0, 1], fr);
+            space.quad(P(a0, y0, dep), [uN[0] * (a1 - a0), 0, uN[2] * (a1 - a0)], [0, y1 - y0, 0], [1, 1, 1]);
+            if (big) F.box(L, ...this.mullion(P(T / 2, y0, dep * 0.5), uN, y1 - y0), fr);
+          } else wall(0, top, wt);
+        }
         else if (L.ceil[n] < h - 0.01) wall(L.ceil[n], h, wt);
       }
       this.buildProp(L, G('prop', cx, cz), glow, cx, cz, c, L.propKind[i], rnd);
@@ -280,9 +344,10 @@ export class Scene3D {
         gg.box(l.x - 0.2, 0.5, l.z - 0.2, l.x + 0.2, 0.72, l.z + 0.2, c);
       }
     }
-    this.buildPit(G, glow);
+    this.buildReactor(G, fit);
     for (const g of geos.values()) { if (!g.n) continue; const m = new THREE.Mesh(g.build(), this.mats[g.mat]); m.castShadow = g.mat !== 'floor' && g.mat !== 'ceil'; m.receiveShadow = true; m.matrixAutoUpdate = false; this.scene.add(m); }
     const gm = new THREE.Mesh(glow.build(), this.mats.glow); gm.matrixAutoUpdate = false; gm.frustumCulled = false; this.scene.add(gm);
+    if (space.n) { const sm = new THREE.Mesh(space.build(), this.spaceMat); sm.matrixAutoUpdate = false; sm.frustumCulled = false; this.scene.add(sm); }
     for (let z = 0; z < ZONES.length; z++) for (const [geo, mat] of [[fit[z], this.fitMat[z]], [fitF[z], this.fitMatF[z]]]) { if (!geo.n) continue; const m = new THREE.Mesh(geo.build(), mat); m.matrixAutoUpdate = false; m.frustumCulled = false; this.scene.add(m); }
   }
 
@@ -359,24 +424,51 @@ export class Scene3D {
         g.box(L, x0 + 0.1, 0.17, mz - 0.03, x1 - 0.1, 2.3, mz + 0.03, [0.2, 0.21, 0.22]);
         break;
       }
+      case 'reactor': break;                 // drawn whole, below
+      case 'container': {
+        const i = cz * W + cx, col = this.contCol.get(i) || grey, rib = col.map(v => v * 0.62), same = n => L.propKind[n] === 'container';
+        B(0, 0, 2.7, col);
+        for (let k = 1; k < 5; k++) { const p = k * T / 5;
+          if (!same(i - W)) g.box(L, x0 + p - 0.035, 0.05, z0 - 0.025, x0 + p + 0.035, 2.65, z0, rib); if (!same(i + W)) g.box(L, x0 + p - 0.035, 0.05, z1, x0 + p + 0.035, 2.65, z1 + 0.025, rib);
+          if (!same(i - 1)) g.box(L, x0 - 0.025, 0.05, z0 + p - 0.035, x0, 2.65, z0 + p + 0.035, rib); if (!same(i + 1)) g.box(L, x1, 0.05, z0 + p - 0.035, x1 + 0.025, 2.65, z0 + p + 0.035, rib); }
+        break;
+      }
+      case 'engine': {
+        B(0.02, 0, 3.1, [0.15, 0.16, 0.18]);
+        for (const y of [0.55, 1.45, 2.35]) g.box(L, x0 - 0.02, y, z0 - 0.02, x1 + 0.02, y + 0.16, z1 + 0.02, [0.34, 0.27, 0.16]);
+        g.box(L, x0 + 0.5, 3.1, z0 + 0.5, x1 - 0.5, 3.6, z1 - 0.5, [0.22, 0.23, 0.25]);
+        if (rnd() < 0.5) glow.quad([x0 + 0.6, 1.9, z1 + 0.025], [0.2, 0, 0], [0, 0.08, 0], [1.6, 0.2, 0.05]);
+        break;
+      }
+      case 'pillar': g.prism(L, mx, mz, 0.45, 0, L.ceil[cz * W + cx], 8, [0.28, 0.3, 0.32]); g.prism(L, mx, mz, 0.6, 0, 0.3, 8, [0.2, 0.21, 0.22]); break;
+      case 'couch': g.box(L, x0 + 0.08, 0, z0 + 0.15, x1 - 0.08, 0.45, z1 - 0.15, [0.3, 0.22, 0.18]); g.box(L, x0 + 0.08, 0.45, z0 + 0.15, x1 - 0.08, 0.95, z0 + 0.45, [0.33, 0.25, 0.2]); break;
       default: if (c === C.TALL) B(0.08, 0, 2.3, grey); else B(0.1, 0, LOW_H, grey);
     }
   }
 
-  buildPit(G, glow) {
+  // Is this solid tile part of the hull itself, with nothing beyond it but more hull and then space?
+  outboard(n, dx, dz) { const L = this.L; let x = n % W, z = (n / W) | 0; for (;;) { x += dx; z += dz; if (x < 0 || z < 0 || x >= W || z >= H) return true; if (L.cells[z * W + x] !== C.SOLID) return false; } }
+  // a wall face with something already on it (a breaker, a station) gets no window
+  faceTaken(cx, cz, side) { const [dx, dz] = SIDES[side], L = this.L; return L.breakers.some(b => b.cx === cx && b.cz === cz && b.dx === dx && b.dz === dz) || L.stations.some(st => st.cx === cx && st.cz === cz && st.dx === dx && st.dz === dz); }
+  mullion(p, uN, hgt) { const w = 0.05; return [p[0] - w - Math.abs(uN[2]) * 0.1, p[1], p[2] - w - Math.abs(uN[0]) * 0.1, p[0] + w + Math.abs(uN[2]) * 0.1, p[1] + hgt, p[2] + w + Math.abs(uN[0]) * 0.1]; }
+  // The reactor: a core up through the deck, ringed with coolant bands that light only when it is running, and a rail round it.
+  buildReactor(G, fit) {
     const L = this.L; let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
-    for (let i = 0; i < W * H; i++) if (L.cells[i] === C.PIT) { const x = i % W, z = (i / W) | 0; x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
-    const ax = x0 * T, bx = (x1 + 1) * T, az = z0 * T, bz = (z1 + 1) * T, mx = (ax + bx) / 2, mz = (az + bz) / 2, g = G('prop', x0, z0), steel = [0.4, 0.43, 0.46], haz = [0.85, 0.6, 0.1];
+    for (let i = 0; i < W * H; i++) if (L.propKind[i] === 'reactor') { const x = i % W, z = (i / W) | 0; x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
+    if (x0 > x1) return;
+    const ax = x0 * T, bx = (x1 + 1) * T, az = z0 * T, bz = (z1 + 1) * T, mx = (ax + bx) / 2, mz = (az + bz) / 2, g = G('prop', x0, z0), top = L.ceil[L.idx(x0, z0)], zone = L.zoneOf[L.idx(x0, z0)];
+    const steel = [0.36, 0.39, 0.42], dark = [0.12, 0.13, 0.14], haz = [0.85, 0.6, 0.1];
     this.pit = { x: mx, z: mz };
-    g.prism(L, mx, mz, 1.1, -30, 9, 10, [0.3, 0.32, 0.34], false);                         // the drill string
-    g.prism(L, mx, mz, 1.5, 3.4, 4.2, 10, [0.5, 0.36, 0.14]); g.prism(L, mx, mz, 1.5, -1.2, -0.4, 10, [0.5, 0.36, 0.14]);
-    for (let y = -4; y > -30; y -= 5) for (let k = 0; k < 10; k++) { const a = k / 10 * 6.283, b = (k + 1) / 10 * 6.283, r = 1.13; glow.quad([mx + Math.cos(b) * r, y, mz + Math.sin(b) * r], [(Math.cos(a) - Math.cos(b)) * r, 0, (Math.sin(a) - Math.sin(b)) * r], [0, 0.12, 0], [0.2, 1.5, 1.2]); }
-    for (const [px, pz] of [[ax, az], [bx, az], [ax, bz], [bx, bz]]) g.box(L, px - 0.18, 0, pz - 0.18, px + 0.18, 9, pz + 0.18, steel);       // derrick legs
-    for (const y of [5.5, 8.2]) { g.box(L, ax, y, az - 0.12, bx, y + 0.24, az + 0.12, steel, true); g.box(L, ax, y, bz - 0.12, bx, y + 0.24, bz + 0.12, steel, true); g.box(L, ax - 0.12, y, az, ax + 0.12, y + 0.24, bz, steel, true); g.box(L, bx - 0.12, y, az, bx + 0.12, y + 0.24, bz, steel, true); }
-    g.box(L, ax, 8.2, mz - 0.2, bx, 8.6, mz + 0.2, steel, true); g.box(L, mx - 0.2, 8.2, az, mx + 0.2, 8.6, bz, steel, true);
-    // the guard rail
+    g.prism(L, mx, mz, 3.0, 0, top, 12, [0.22, 0.24, 0.26], false);
+    g.prism(L, mx, mz, 3.3, 0, 0.6, 12, dark); g.prism(L, mx, mz, 3.25, top - 0.7, top, 12, dark, false);
+    for (const y of [1.2, 2.4, 3.6, 4.8]) {
+      if (y > top - 1) continue;
+      g.prism(L, mx, mz, 3.12, y - 0.12, y + 0.12, 12, steel);
+      for (let k = 0; k < 12; k++) { const a = k / 12 * 6.283, b = (k + 1) / 12 * 6.283, r = 3.02; fit[zone].quad([mx + Math.cos(b) * r, y + 0.2, mz + Math.sin(b) * r], [(Math.cos(a) - Math.cos(b)) * r, 0, (Math.sin(a) - Math.sin(b)) * r], [0, 0.3, 0], [0.2, 1.6, 1.4]); }
+    }
+    for (let k = 0; k < 8; k++) { const a = k / 8 * 6.283; g.box(L, mx + Math.cos(a) * 3.3 - 0.12, 0, mz + Math.sin(a) * 3.3 - 0.12, mx + Math.cos(a) * 3.3 + 0.12, top, mz + Math.sin(a) * 3.3 + 0.12, steel); }
     for (const y of [0.55, 1.05]) { g.box(L, ax, y, az - 0.035, bx, y + 0.07, az + 0.035, haz, true); g.box(L, ax, y, bz - 0.035, bx, y + 0.07, bz + 0.035, haz, true); g.box(L, ax - 0.035, y, az, ax + 0.035, y + 0.07, bz, haz, true); g.box(L, bx - 0.035, y, az, bx + 0.035, y + 0.07, bz, haz, true); }
-    for (let x = ax + T; x < bx; x += T) for (const z of [az, bz]) g.box(L, x - 0.04, 0, z - 0.04, x + 0.04, 1.05, z + 0.04, haz);
+    for (let x = ax; x <= bx; x += T) for (const z of [az, bz]) g.box(L, x - 0.04, 0, z - 0.04, x + 0.04, 1.05, z + 0.04, haz);
     for (let z = az + T; z < bz; z += T) for (const x of [ax, bx]) g.box(L, x - 0.04, 0, z - 0.04, x + 0.04, 1.05, z + 0.04, haz);
   }
 
@@ -389,28 +481,41 @@ export class Scene3D {
       const grp = new THREE.Group(); grp.position.set(d.x, 0, d.z); this.scene.add(grp);
       const rec = { d, grp, leaves: [], open: -1, lamp: null, seal: null, sealed: false };
       if (d.gate) {
-        const g = new Geo(), haz = [0.9, 0.62, 0.08], blk = [0.08, 0.08, 0.08];
-        for (let k = 0; k <= len / 0.5; k++) { const p = -half + k * 0.5; g.box(L, d.x - 0.04, 0.05, d.z + p - 0.04, d.x + 0.04, 2.4, d.z + p + 0.04, k % 2 ? haz : blk, true); }
-        for (const y of [0.3, 1.2, 2.3]) g.box(L, d.x - 0.06, y, d.z - half, d.x + 0.06, y + 0.1, d.z + half, haz, true);
+        // the pod's hatch: a heavy slab with a porthole, striped round its edge, that slides up into the roof
+        const g = new Geo(), haz = [0.9, 0.62, 0.08], blk = [0.08, 0.08, 0.08], plate = [0.32, 0.34, 0.36];
+        const hb = (p0, p1, y0, y1, t, col) => ax ? g.box(L, d.x + p0, y0, d.z - t, d.x + p1, y1, d.z + t, col, true) : g.box(L, d.x - t, y0, d.z + p0, d.x + t, y1, d.z + p1, col, true);
+        hb(-half, half, 0.02, 2.5, 0.1, plate);
+        for (let k = 0; k < len / 0.4; k++) { const p = -half + k * 0.4; hb(p, p + 0.4, 2.25, 2.45, 0.115, k % 2 ? haz : blk); hb(p, p + 0.4, 0.06, 0.26, 0.115, k % 2 ? blk : haz); }
+        hb(-0.35, 0.35, 1.2, 1.9, 0.115, blk);
         const geo = g.build(); geo.translate(-d.x, 0, -d.z);
         const m = new THREE.Mesh(geo, leafMat); m.castShadow = true; m.receiveShadow = true; grp.add(m); rec.leaves.push(m);
       } else {
-        // two leaves that slide apart into the walls
+        // two leaves that slide apart into the walls. A bulkhead's are thicker, and striped.
+        const bulk = d.bulk >= 0;
         for (const s of [-1, 1]) {
-          const g = new Geo(), a0 = s < 0 ? -half : 0, a1 = s < 0 ? 0 : half, col = [0.5, 0.54, 0.56], trim = [0.85, 0.6, 0.12];
+          const g = new Geo(), a0 = s < 0 ? -half : 0, a1 = s < 0 ? 0 : half, col = bulk ? [0.3, 0.32, 0.34] : [0.5, 0.54, 0.56], trim = [0.85, 0.6, 0.12];
           const bx = (p0, p1, y0, y1, t, c) => ax ? g.box(L, d.x + p0, y0, d.z - t, d.x + p1, y1, d.z + t, c, true) : g.box(L, d.x - t, y0, d.z + p0, d.x + t, y1, d.z + p1, c, true);
-          bx(a0, a1, 0, DOOR_H, 0.07, col); bx(a0 + 0.08, a1 - 0.08, 0.9, 1.05, 0.085, trim); bx(a0 + 0.12, a1 - 0.12, 1.5, 2.1, 0.08, [0.2, 0.22, 0.24]);
+          if (bulk) {
+            bx(a0, a1, 0, DOOR_H, 0.14, col);
+            for (let k = 0; k < 6; k++) { const p = a0 + (a1 - a0) * k / 6; bx(p + 0.02, p + (a1 - a0) / 6 - 0.02, 0.35, 0.65, 0.155, k % 2 ? [0.08, 0.08, 0.08] : trim); bx(p + 0.02, p + (a1 - a0) / 6 - 0.02, 1.9, 2.2, 0.155, k % 2 ? [0.08, 0.08, 0.08] : trim); }
+            bx(a0 + 0.15, a1 - 0.15, 0.95, 1.55, 0.15, [0.2, 0.21, 0.22]);
+          } else { bx(a0, a1, 0, DOOR_H, 0.07, col); bx(a0 + 0.08, a1 - 0.08, 0.9, 1.05, 0.085, trim); bx(a0 + 0.12, a1 - 0.12, 1.5, 2.1, 0.08, [0.2, 0.22, 0.24]); }
           const geo = g.build(); geo.translate(-d.x, 0, -d.z);
           const m = new THREE.Mesh(geo, leafMat); m.castShadow = true; m.receiveShadow = true; m.userData.s = s; grp.add(m); rec.leaves.push(m);
         }
         // frame: posts, and a header that fills the gap above the leaves
         const top = Math.min(L.ceil[d.cells[0]], 3.4), fc = [0.2, 0.22, 0.24];
         const fb = (p0, p1, y0, y1, t) => ax ? frame.box(L, d.x + p0, y0, d.z - t, d.x + p1, y1, d.z + t, fc, true) : frame.box(L, d.x - t, y0, d.z + p0, d.x + t, y1, d.z + p1, fc, true);
-        fb(-half, -half + 0.1, 0, DOOR_H, 0.16); fb(half - 0.1, half, 0, DOOR_H, 0.16); fb(-half, half, DOOR_H, top, 0.16);
+        const ft = bulk ? 0.34 : 0.16; fb(-half, -half + (bulk ? 0.25 : 0.1), 0, DOOR_H, ft); fb(half - (bulk ? 0.25 : 0.1), half, 0, DOOR_H, ft); fb(-half, half, DOOR_H, top, ft);
+        if (bulk) for (const sg of [-1, 1]) {        // each side names the section beyond it
+          const sec = L.sections[sg < 0 ? d.bulk + 1 : d.bulk];
+          signs.push({ text: (sg < 0 ? '' : '') + 'SECTION ' + (sec.id + 1) + ' · ' + sec.name.toUpperCase(), x: d.x + (ax ? 0 : sg * 0.35), z: d.z + (ax ? sg * 0.35 : 0), ry: ax ? (sg > 0 ? 0 : Math.PI) : (sg > 0 ? Math.PI / 2 : -Math.PI / 2), big: true });
+        }
         // indicator lamp, both sides
         const lg = new GlowGeo(), y = DOOR_H + 0.08;
-        if (ax) { lg.quad([-0.14, y, 0.165], [0.28, 0, 0], [0, 0.07, 0], [1, 1, 1]); lg.quad([0.14, y, -0.165], [-0.28, 0, 0], [0, 0.07, 0], [1, 1, 1]); }
-        else { lg.quad([0.165, y, 0.14], [0, 0, -0.28], [0, 0.07, 0], [1, 1, 1]); lg.quad([-0.165, y, -0.14], [0, 0, 0.28], [0, 0.07, 0], [1, 1, 1]); }
+        const lw = bulk ? 0.5 : 0.14, lh = bulk ? 0.12 : 0.07, lt = bulk ? 0.345 : 0.165;
+        if (ax) { lg.quad([-lw, y, lt], [lw * 2, 0, 0], [0, lh, 0], [1, 1, 1]); lg.quad([lw, y, -lt], [-lw * 2, 0, 0], [0, lh, 0], [1, 1, 1]); }
+        else { lg.quad([lt, y, lw], [0, 0, -lw * 2], [0, lh, 0], [1, 1, 1]); lg.quad([-lt, y, -lw], [0, 0, lw * 2], [0, lh, 0], [1, 1, 1]); }
         rec.lamp = new THREE.Mesh(lg.build(), new THREE.MeshBasicMaterial({ color: 0xffaa22 })); grp.add(rec.lamp);
         // two steel bars welded across both faces and a red tell-tale, shown only on a match where this door has been sealed
         const sg = new Geo(), steel = [0.34, 0.33, 0.3], tb = 0.125;
@@ -436,29 +541,90 @@ export class Scene3D {
       this.doors.push(rec);
     }
     const fm = new THREE.Mesh(frame.build(), this.mats.prop); fm.castShadow = true; fm.receiveShadow = true; fm.matrixAutoUpdate = false; this.scene.add(fm);
-    const cache = new Map(), pg = new THREE.PlaneGeometry(1.5, 0.28);
+    const cache = new Map(), pg = new THREE.PlaneGeometry(1.5, 0.28), pgBig = new THREE.PlaneGeometry(3.2, 0.42);
     for (const s of signs) {
       let mat = cache.get(s.text); if (!mat) { mat = new THREE.MeshBasicMaterial({ map: signTexture(s.text), color: 0x9a9a9a }); cache.set(s.text, mat); }
-      const m = new THREE.Mesh(pg, mat); m.position.set(s.x, DOOR_H + 0.42, s.z); m.rotation.y = s.ry; m.matrixAutoUpdate = false; m.updateMatrix(); this.scene.add(m);
+      const m = new THREE.Mesh(s.big ? pgBig : pg, mat); m.position.set(s.x, DOOR_H + (s.big ? 0.5 : 0.42), s.z); m.rotation.y = s.ry; m.matrixAutoUpdate = false; m.updateMatrix(); this.scene.add(m);
     }
   }
 
-  // ------------------------------------------------------------------------------------------ the lift
+  // ------------------------------------------------------------------------------------------ the escape pod
+  // The escape pod: seats round its walls, a light inside, a beacon over the hatch, and the screen on the console that primes it.
   buildLift() {
-    const L = this.L, lf = L.lift, grp = new THREE.Group(); grp.position.set(lf.x, 0, lf.z);
-    const body = this.ambient({ color: 0x6b6f4a, roughness: 0.6, metalness: 0.4 });
-    const add = (w, h, d, x, y, z, mat = body) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; grp.add(m); return m; };
-    add(7.6, 0.14, 7.6, 0, 0.07, 0);
-    for (const sx of [-1, 1]) for (const sz of [-1, 1]) add(0.16, 3.1, 0.16, sx * 3.7, 1.6, sz * 3.7);
-    add(7.6, 0.12, 7.6, 0, 3.2, 0); for (const sz of [-1, 1]) add(7.6, 0.08, 0.08, 0, 1.1, sz * 3.72); add(0.08, 0.08, 7.6, -3.72, 1.1, 0);
-    const lampMat = new THREE.MeshBasicMaterial({ color: 0xfff0c0 }); add(1.2, 0.06, 0.4, 0, 3.12, 0, lampMat);
-    this.liftLight = new THREE.PointLight(0xffe2a8, 0, 14, 1.6); this.liftLight.position.set(0, 2.8, 0); grp.add(this.liftLight);
-    grp.position.y = 16; this.scene.add(grp); this.liftGrp = grp; this.liftBody = body; this.liftY = 16;
-    // the call panel's screen, and the beacon over the gate
+    const L = this.L, lf = L.lift, g = new Geo(); let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
+    for (const i of lf.cells) { const x = i % W, z = (i / W) | 0; x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
+    const ax = x0 * T, bx = (x1 + 1) * T, az = z0 * T, bz = (z1 + 1) * T, seat = [0.55, 0.2, 0.1], frame = [0.2, 0.21, 0.23];
+    const chair = (x, z, fx, fz) => { g.box(L, x - 0.32, 0, z - 0.32, x + 0.32, 0.45, z + 0.32, frame); g.box(L, x - 0.3, 0.45, z - 0.3, x + 0.3, 0.58, z + 0.3, seat); const bxx = x - fx * 0.3, bzz = z - fz * 0.3; g.box(L, Math.min(bxx, bxx - fx * 0.12) - (fz ? 0.3 : 0), 0.58, Math.min(bzz, bzz - fz * 0.12) - (fx ? 0.3 : 0), Math.max(bxx, bxx - fx * 0.12) + (fz ? 0.3 : 0), 1.5, Math.max(bzz, bzz - fz * 0.12) + (fx ? 0.3 : 0), seat); };
+    for (const x of [ax + 1.2, (ax + bx) / 2, bx - 1.2]) chair(x, az + 0.55, 0, 1);
+    chair(ax + 0.55, az + 2.4, 1, 0); chair(bx - 0.55, az + 2.4, -1, 0); chair(ax + 0.55, az + 3.7, 1, 0);
+    for (const y of [0.0, 2.45]) g.box(L, ax, y, az, bx, y + 0.15, bz, frame, true);
+    const m = new THREE.Mesh(g.build(), this.mats.prop); m.castShadow = true; m.receiveShadow = true; m.matrixAutoUpdate = false; this.scene.add(m);
+    this.liftLight = new THREE.PointLight(0xffd7a0, 0, 9, 1.6); this.liftLight.position.set(lf.x, 2.2, lf.z); this.scene.add(this.liftLight);
     const c = lf.console; this.liftScreen = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.8), new THREE.MeshBasicMaterial({ color: 0xff2200 }));
     this.liftScreen.rotation.x = -Math.PI / 2; this.liftScreen.position.set(c.x, LOW_H + 0.005, c.z); this.scene.add(this.liftScreen);
-    this.beacon = new THREE.PointLight(0xff8a1e, 0, 22, 1.4); this.beacon.position.set(lf.x + 6.5, 3.6, lf.z); this.scene.add(this.beacon);
+    this.beacon = new THREE.PointLight(0xff8a1e, 0, 22, 1.4); this.beacon.position.set(lf.x, 3.4, bz + T + 0.6); this.scene.add(this.beacon);
     this.beaconMesh = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), new THREE.MeshBasicMaterial({ color: 0x331a05 })); this.beaconMesh.position.copy(this.beacon.position); this.scene.add(this.beaconMesh);
+  }
+  // The things the crew has to work at: coolant pumps, the reactor lever, terminals, the bridge uplink. Each has a lamp
+  // (red: not done, amber: being worked, green: done) and the terminals a screen.
+  buildStations() {
+    const L = this.L, g = new Geo(), dark = [0.13, 0.14, 0.15], steel = [0.4, 0.43, 0.46], yel = [0.8, 0.6, 0.12], rust = [0.42, 0.3, 0.18];
+    this.stationRecs = [];
+    for (const st of L.stations) {
+      const along = st.dx ? [0, 1] : [1, 0], nx = -st.dx, nz = -st.dz, top = L.ceil[L.idx(st.cx, st.cz)];
+      const bx = (a0, a1, y0, y1, d0, d1, col) => { const xs = [st.x + along[0] * a0 + nx * d0, st.x + along[0] * a1 + nx * d1], zs = [st.z + along[1] * a0 + nz * d0, st.z + along[1] * a1 + nz * d1]; g.box(L, Math.min(...xs), y0, Math.min(...zs), Math.max(...xs), y1, Math.max(...zs), col, true); };
+      let lampY = 2.0, screen = null;
+      if (st.kind === 'pump') {
+        bx(-0.55, 0.55, 0, 1.75, 0, 0.45, [0.24, 0.3, 0.3]); bx(-0.62, 0.62, 1.75, 1.9, 0, 0.5, dark);
+        for (const a of [-0.35, 0.35]) bx(a - 0.09, a + 0.09, 1.9, top, 0.12, 0.3, rust);
+        for (let k = 0; k < 8; k++) { const t = k / 8 * 6.283, r = 0.3; bx(Math.cos(t) * r - 0.05, Math.cos(t) * r + 0.05, 1.05 + Math.sin(t) * r - 0.05, 1.05 + Math.sin(t) * r + 0.05, 0.45, 0.52, [0.7, 0.12, 0.08]); }
+        bx(-0.04, 0.04, 0.78, 1.32, 0.45, 0.5, [0.7, 0.12, 0.08]); bx(-0.27, 0.27, 1.01, 1.09, 0.45, 0.5, [0.7, 0.12, 0.08]);
+        lampY = 2.0;
+      } else if (st.kind === 'lever') {
+        bx(-0.5, 0.5, 0.7, 2.0, 0, 0.3, dark); for (let k = 0; k < 5; k++) bx(-0.5 + k * 0.2, -0.4 + k * 0.2, 0.7, 0.8, 0.3, 0.31, k % 2 ? [0.08, 0.08, 0.08] : yel);
+        bx(-0.07, 0.07, 1.2, 1.9, 0.3, 0.42, steel); bx(-0.16, 0.16, 1.85, 2.0, 0.3, 0.5, [0.7, 0.12, 0.08]);
+        lampY = 2.15;
+      } else {
+        const wide = st.kind === 'uplink' ? 0.7 : 0.5;
+        bx(-wide - 0.06, wide + 0.06, 1.0, 2.0, 0, 0.12, dark); bx(-wide, wide, 0.0, 1.0, 0, 0.35, [0.22, 0.24, 0.26]); bx(-wide, wide, 0.95, 1.02, 0, 0.42, [0.3, 0.32, 0.34]);
+        screen = new THREE.Mesh(new THREE.PlaneGeometry(wide * 1.8, 0.75), new THREE.MeshBasicMaterial({ color: 0x0a2a30 }));
+        screen.position.set(st.x + nx * 0.125, 1.5, st.z + nz * 0.125); screen.rotation.y = Math.atan2(nx, nz); screen.matrixAutoUpdate = false; screen.updateMatrix(); this.scene.add(screen);
+        lampY = 2.12;
+      }
+      const lamp = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.09), new THREE.MeshBasicMaterial({ color: 0xff2a12 }));
+      const lo = st.kind === 'pump' ? 0.5 : st.kind === 'lever' ? 0.31 : 0.13;
+      lamp.position.set(st.x + nx * lo, lampY, st.z + nz * lo); lamp.rotation.y = Math.atan2(nx, nz); lamp.matrixAutoUpdate = false; lamp.updateMatrix(); this.scene.add(lamp);
+      this.stationRecs.push({ st, lamp, screen });
+    }
+    const m = new THREE.Mesh(g.build(), this.mats.prop); m.castShadow = true; m.receiveShadow = true; m.matrixAutoUpdate = false; this.scene.add(m);
+  }
+  // The hatches in the ceiling that the creature uses. Each is a frame in the ceiling and a grille that swings down when
+  // something comes through it.
+  buildVents() {
+    const L = this.L, g = new Geo(), fr = [0.16, 0.17, 0.18], s = 0.62;
+    for (const v of L.vents) {
+      const h = L.ceil[v.cell], x = v.x, z = v.z;
+      g.box(L, x - s - 0.1, h - 0.07, z - s - 0.1, x + s + 0.1, h - 0.01, z - s, fr, true); g.box(L, x - s - 0.1, h - 0.07, z + s, x + s + 0.1, h - 0.01, z + s + 0.1, fr, true);
+      g.box(L, x - s - 0.1, h - 0.07, z - s, x - s, h - 0.01, z + s, fr, true); g.box(L, x + s, h - 0.07, z - s, x + s + 0.1, h - 0.01, z + s, fr, true);
+    }
+    const m = new THREE.Mesh(g.build(), this.mats.prop); m.matrixAutoUpdate = false; this.scene.add(m);
+    // the grilles themselves: one instanced mesh for all of them, each hinged along one edge
+    const gg = new THREE.BoxGeometry(s * 2, 0.025, s * 2); gg.translate(s, 0, 0);
+    const slats = []; for (let k = 0; k < 6; k++) { const b = new THREE.BoxGeometry(s * 2, 0.06, 0.05); b.translate(s, -0.03, -s + 0.1 + k * (s * 2 - 0.2) / 5); slats.push(b); }
+    const geo = mergeBoxes([gg, ...slats]);
+    this.ventGrille = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ color: 0x34383c, roughness: 0.55, metalness: 0.5 }), L.vents.length);
+    this.ventSwing = new Float32Array(L.vents.length); this.ventT = new Float32Array(L.vents.length);
+    this.ventGrille.frustumCulled = false; this.scene.add(this.ventGrille); this.placeVents(true);
+  }
+  // swing a hatch open (the creature is coming through it); it falls shut again a moment later
+  ventKick(id) { if (id >= 0 && id < this.ventT.length) this.ventT[id] = 1.6; }
+  placeVents(all) {
+    const L = this.L, mm = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), p = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
+    for (let k = 0; k < L.vents.length; k++) {
+      if (!all && this.ventT[k] <= 0 && this.ventSwing[k] === 0) continue;
+      const v = L.vents[k]; p.set(v.x - 0.62, L.ceil[v.cell] - 0.05, v.z); e.set(0, 0, -this.ventSwing[k] * 1.45); q.setFromEuler(e); mm.compose(p, q, one); this.ventGrille.setMatrixAt(k, mm);
+    }
+    this.ventGrille.instanceMatrix.needsUpdate = true;
   }
 
   // ------------------------------------------------------------------------------------------ things that belong to one match
@@ -488,7 +654,7 @@ export class Scene3D {
       this.breakers.push({ b, mat });
     }
   }
-  // Plates along the corridors that point the way back to the lift. Which way each one points depends on the match,
+  // Plates along the corridors that point the way to the escape pod. Which way each one points depends on the match,
   // because sealed doors change the shortest way, so each plate has both arrows and shows one.
   buildSigns() {
     const L = this.L, geo = new THREE.PlaneGeometry(1.0, 0.235), mats = [new THREE.MeshBasicMaterial({ map: waySign(-1), color: 0x8c8c8c }), new THREE.MeshBasicMaterial({ map: waySign(1), color: 0x8c8c8c })];
@@ -502,7 +668,7 @@ export class Scene3D {
   }
   routeSigns(layout) {
     const L = this.L, walk = L.walkP.slice(); for (const d of layout.sealed) for (const c of L.doors[d].cells) walk[c] = 0;
-    const dist = distField(walk, L.idx(10, 24)), at = n => (dist[n] >= 0 ? dist[n] : 1e9);
+    const dist = distField(walk, L.idx(L.lift.console.cx, L.lift.console.cz)), at = n => (dist[n] >= 0 ? dist[n] : 1e9);
     for (const s of this.signs) { const here = at(s.i), r = at(s.right), l = at(s.left); s.m[0].visible = l < here && l <= r; s.m[1].visible = r < here && r < l; }
   }
 
@@ -549,7 +715,7 @@ export class Scene3D {
     this.scene.add(grp);
   }
   setLayout(layout) {
-    this.zones = layout.zones; this.routeSigns(layout); this.dressMatch(layout);
+    this.zones = layout.zones; this.stationsActive = layout.stations; this.routeSigns(layout); this.dressMatch(layout);
     for (const r of this.doors) { r.sealed = layout.sealed.includes(r.d.id); if (r.seal) r.seal.visible = r.sealed; r.open = -1; }
     for (const t of this.tags) this.scene.remove(t.obj); for (const t of this.items) this.scene.remove(t.obj);
     for (const d of this.decoys.values()) this.scene.remove(d.obj); this.decoys.clear();
@@ -576,6 +742,21 @@ export class Scene3D {
       if (r.d.gate) r.leaves[0].position.y = o * 2.7;
       else { const s = o * (r.d.len / 2 - 0.06); for (const m of r.leaves) { if (r.d.axis === 'x') m.position.x = m.userData.s * s; else m.position.z = m.userData.s * s; } r.lamp.material.color.setHex(r.sealed || r.jam ? 0xff2a12 : rep.doorWant[r.d.id] ? 0x38ff8a : 0xffa424); }
     }
+    for (const r of this.doors) if (r.d.bulk >= 0) r.lamp.material.color.setHex(rep.sec === r.d.bulk && rep.secDone ? 0x38ff8a : (Math.sin(this.time * 3) > 0 || rep.sec > r.d.bulk ? 0xff2a12 : 0x400a04));
+    // the stations: red until someone works them, amber while they are being worked, green once done; a terminal not in use is dark
+    for (const k of this.stationRecs) {
+      const id = k.st.id, act = !this.stationsActive || this.stationsActive.includes(id), p = rep.stProg ? rep.stProg[id] || 0 : 0, done = p >= 1;
+      k.lamp.material.color.setHex(!act ? 0x101010 : done ? 0x30ff80 : p > 0 ? (Math.sin(this.time * 8) > 0 ? 0xffa820 : 0x603808) : 0xff2a12);
+      if (k.screen) k.screen.material.color.setHex(!act ? 0x050607 : done ? 0x1a6a38 : p > 0 ? (Math.sin(this.time * 12 + id) > 0 ? 0x2a8aa0 : 0x18505e) : 0x0e3640);
+    }
+    // the vent hatches
+    let moved = false;
+    for (let k = 0; k < this.ventT.length; k++) {
+      if (this.ventT[k] > 0) { this.ventT[k] -= dt; const want = this.ventT[k] > 0.5 ? 1 : 0; this.ventSwing[k] += (want - this.ventSwing[k]) * Math.min(1, dt * (want ? 18 : 3)); moved = true; }
+      else if (this.ventSwing[k] !== 0) { this.ventSwing[k] = Math.max(0, this.ventSwing[k] - dt * 2.5) * (1 + 0.6 * Math.sin(this.time * 30) * this.ventSwing[k]); if (this.ventSwing[k] < 0.01) this.ventSwing[k] = 0; moved = true; }
+    }
+    if (moved) this.placeVents(false);
+    this.spaceMat.uniforms.uTime.value = this.time;
     for (let i = 0; i < this.tags.length; i++) { const t = this.tags[i], taken = !!(rep.tagBits & (1 << i)); if (taken !== t.taken) { t.taken = taken; t.obj.visible = !taken; } if (!taken) t.obj.userData.led.material.opacity = 0.35 + 0.65 * Math.max(0, Math.sin(this.time * 3.2 + t.ph)); }
     for (let i = 0; i < this.items.length; i++) { const t = this.items[i], taken = !!(rep.itemBits & (1 << i)); if (taken !== t.taken) { t.taken = taken; t.obj.visible = !taken; } if (!taken) t.obj.userData.led.material.opacity = 0.2 + 0.5 * Math.max(0, Math.sin(this.time * 2.1 + t.ph)); }
     // thrown sounders
@@ -588,12 +769,9 @@ export class Scene3D {
       d.obj.userData.led.scale.setScalar(s.state === 1 ? 1.2 : 0.4);
     }
     for (const [id, d] of this.decoys) if (!d.live) { this.scene.remove(d.obj); this.decoys.delete(id); }
-    // the lift: up the shaft until it is called, then it comes down over the last few seconds
-    const lf = rep.lift; let y = 16;
-    if (lf.state === LIFT.CALLED) y = 16 * clamp01(lf.timer / 9); else if (lf.state === LIFT.ARRIVED) y = 0; else if (lf.state === LIFT.LEFT) y = Math.min(16, this.liftY + dt * 4);
-    this.liftY = lf.state === LIFT.LEFT ? y : this.liftY + (y - this.liftY) * Math.min(1, dt * 6); this.liftGrp.position.y = this.liftY;
-    this.liftLight.intensity = this.liftY < 12 ? 26 : 0;
-    this.liftBody.userData.amb.value.setRGB(0.25, 0.22, 0.14);
+    // the pod: lit inside once its hatch has opened
+    const lf = rep.lift;
+    this.liftLight.intensity = lf.state >= LIFT.ARRIVED ? 12 : lf.state === LIFT.CALLED ? 3 + 2 * Math.sin(this.time * 7) : 0;
     const blink = Math.sin(this.time * 6) > 0;
     this.liftScreen.material.color.setHex(lf.state === LIFT.LOCKED ? 0xc01808 : lf.state === LIFT.READY ? (blink ? 0x30ff80 : 0x0c6030) : lf.state === LIFT.CALLED ? (blink ? 0xffa010 : 0x402800) : 0x30ff80);
     const alarm = lf.state === LIFT.CALLED;

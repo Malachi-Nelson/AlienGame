@@ -9,11 +9,11 @@ const ev = (f, a) => page.evaluate(f, a), wait = ms => page.waitForTimeout(ms);
 let fail = 0; const ok = (c, m) => { console.log((c ? 'ok   ' : 'FAIL ') + m); if (!c) fail++; };
 const feedHas = (re, ms = 9000) => until(`[...document.querySelectorAll('#h-feed div')].some(d => ${re}.test(d.textContent))`, ms);
 const bannerIs = (re, ms = 9000) => until(`${re}.test(document.getElementById('h-banner').textContent) && /on/.test(document.getElementById('h-banner').className)`, ms);
-const park = () => ev(() => { const w = __los.session.world, c = w.creature; c.enter(1); c.path = null; c.pauseT = 1e6; c.x = 121; c.z = 17; });        // in the lab, a long way off
+const park = () => ev(() => { const w = __los.session.world, c = w.creature; c.enter(1); c.path = null; c.pauseT = 1e6; c.ventCool = 1e9; c.x = 5; c.z = 63; });        // at the far end of the lower walkway, out of the way
 
 ok(await ev(() => document.getElementById('m-record').hidden), 'on a first visit there is no record to show');
 // a match with one dead circuit that is not the west wing, where everyone starts
-await ev(() => { const s = __los.session; s.newSeed = () => { for (let seed = 1; ; seed++) { const lay = __los.layoutMatch(__los.L, seed); if (lay.sealed.length >= 2 && lay.zones.includes(0) && lay.zones[0] === 2) return seed; } }; });
+await ev(() => { const s = __los.session; s.newSeed = () => { for (let seed = 1; ; seed++) { const lay = __los.layoutMatch(__los.L, seed); if (lay.sealed.length >= 2 && lay.zones.slice(1).includes(2)) return seed; } }; });
 await wait(800); await page.click('#m-solo'); await wait(1200);
 const lay = await ev(() => { const l = __los.session.rep.layout; return { sealed: l.sealed, zones: l.zones, trait: l.trait, plain: l.plain }; });
 console.log('     this match:', JSON.stringify(lay));
@@ -49,12 +49,12 @@ ok(await until('__los.session.world.creature.lockerOcc[0] > 0', 9000), 'breathin
 await park(); await ev(() => { window.__stop = 1; __los.input.press('use'); }); ok(await until('__los.player.hidden < 0', 5000), 'out again');
 
 // --- breakers
-const deadZ = lay.zones.indexOf(0);
+const deadZ = 0, onZ = lay.zones.findIndex((p, i) => i > 0 && p === 2);         // engineering is dark until the reactor runs
 const face = z => ev(z => { const b = __los.L.breakers[z], p = __los.player; p.x = b.ax; p.z = b.az; p.yaw = Math.atan2(-b.dx, -b.dz); p.pitch = 0; p.light = false; }, z);
 await face(deadZ); await wait(900);
 ok(await ev(z => __los.s3.pow[z] < 0.15, deadZ), 'the dead wing is dark'); await g.shot('w-breaker-dark');
 ok(await ev(() => { const t = __los.player.target; return t && t.kind === 'breaker' && /Throw the breaker/.test(t.text); }), 'its breaker offers to be thrown');
-ok(await feedHas('/red lamps are emergency lighting/'), 'standing in a dark wing explains the red lamps and the breakers, once');
+ok(await ev(() => (JSON.parse(localStorage.getItem('los-settings')).tips || {}).dark === 1), 'being in the dark explains the red lamps and the breakers, once');
 await ev(() => __los.input.press('use'));
 ok(await until(`(__los.session.rep.zoneOff & (64 << ${deadZ})) !== 0`, 5000), 'throwing it puts the wing on borrowed power');
 ok(await until(`__los.s3.pow[${deadZ}] > 0.85`, 8000) && await feedHas('/has power for now/'), 'the lights come up and everyone is told'); await wait(300); await g.shot('w-breaker-lit');
@@ -62,12 +62,12 @@ ok(await ev(() => { const t = __los.player.target; return t && t.dead && /holdin
 ok(await ev(() => __los.session.world.creature.heard !== undefined || true), 'it makes a noise in the simulation');
 await ev(z => { __los.session.world.zoneBoost[z] = 0.4; }, deadZ);
 ok(await until(`__los.s3.pow[${deadZ}] < 0.15`, 9000) && await feedHas('/has run out/'), 'and when it runs out the wing goes dark again');
-await face(0); await ev(() => __los.session.world.tripZone(0, 60)); await wait(900);
+await face(onZ); await ev(z => __los.session.world.tripZone(z, 60), onZ); await wait(900);
 ok(await ev(() => /Reset the breaker/.test(__los.player.target && __los.player.target.text)), 'a tripped circuit can be reset at its breaker');
-await ev(() => __los.input.press('use')); ok(await until('__los.s3.pow[0] > 0.85', 8000), 'which brings it straight back');
+await ev(() => __los.input.press('use')); ok(await until(`__los.s3.pow[${onZ}] > 0.85`, 8000), 'which brings it straight back');
 await ev(() => __los.session.world.blackout(60)); await wait(900);
 ok(await ev(() => /ends the blackout/.test(__los.player.target && __los.player.target.text)), 'in a blackout any breaker offers to end it');
-await ev(() => __los.input.press('use')); ok(await until('__los.s3.pow[0] > 0.85 && !(__los.session.rep.zoneOff & 32)', 8000), 'and does');
+await ev(() => __los.input.press('use')); ok(await until(`__los.s3.pow[${onZ}] > 0.85 && !(__los.session.rep.zoneOff & 32)`, 8000), 'and does');
 await ev(() => __los.input.hold('map', true)); await wait(600); await g.shot('w-map');
 ok(await ev(() => /Yellow: breakers/.test(document.getElementById('h-mapnote').textContent)), 'the schematic marks the breakers');
 await ev(() => __los.input.hold('map', false));
@@ -78,15 +78,15 @@ await ev(() => { const s = __los.sparks.spots[0], p = __los.player, snd = __los.
 ok(await until('window.__sp >= 1', 6000), 'and one near the player goes off'); await g.shot('w-spark');
 
 // --- it rears, then it comes
-await ev(() => { const w = __los.session.world, c = w.creature, p = __los.player; p.x = 45; p.z = 59; p.yaw = 0; p.pitch = 0; p.light = true;
+await ev(() => { const w = __los.session.world, c = w.creature, p = __los.player; p.x = 17; p.z = 33; p.yaw = -Math.PI / 2; p.pitch = 0; p.light = true;
   for (let d = 0; d < w.doorWant.length; d++) if (!__los.L.doors[d].gate && !w.doorSeal[d]) w.doorWant[d] = 1;
-  c.pauseT = 0; c.x = 45; c.z = 45; c.yaw = 0; c.backoff = 0; w.time = Math.max(w.time, 60); });
+  c.pauseT = 0; c.x = 37; c.z = 33; c.yaw = Math.PI / 2; c.backoff = 0; c.ventCool = 1e9; w.time = Math.max(w.time, 60); });
 await wait(700); await g.shot('w-far');
 await ev(() => { const w = __los.session.world, c = w.creature; c.startHunt(w.players.values().next().value); c.rearT = 2.6; });
 ok(await until('__los.session.rep.creature.rear === true', 5000), 'starting a hunt from a distance, it rears first, and the page is told'); await wait(900); await g.shot('w-rear');
 ok(await until('__los.session.rep.creature.rear === false && __los.session.rep.creature.state === 4', 8000), 'then it comes');
 await ev(() => { window.__down = 0; const lp = () => { if (__los.session.rep.me.status === 1) __down = 1; if (!__down) requestAnimationFrame(lp); }; lp(); });
-ok(await until('__los.cam.fov < 70', 12000), 'and catches the player');
+ok(await until('__los.cam.fov < 70', 30000), 'and catches the player');
 for (let i = 0; i < 3; i++) { await g.shot('w-caught' + i); }
 ok(await until('window.__down === 1', 8000), 'who goes down'); await g.shot('w-down');
 ok(await until('__los.session.rep.me.status === 0', 14000), 'alone, the first time is a second wind'); await park();

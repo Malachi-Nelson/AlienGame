@@ -85,7 +85,7 @@ button.primary:hover:not(:disabled) { background: #1b5650; }
 #h-feed { position: absolute; left: 22px; bottom: 120px; font-size: 13px; color: #cfe0e2; }
 #h-feed div { margin-top: 3px; animation: fade 6s forwards; } #h-feed .radio { color: var(--teal); font-style: italic; opacity: 0.85; } #h-feed .tip { color: #ffe1ad; max-width: min(520px, 60vw); padding-left: 8px; border-left: 2px solid var(--amber); } @keyframes fade { 0%, 75% { opacity: 1; } 100% { opacity: 0; } }
 #h-banner { position: absolute; left: 50%; top: 27%; transform: translateX(-50%); width: min(760px, 90vw); text-align: center; font-size: 20px; letter-spacing: 0.14em; text-transform: uppercase; color: #fff; opacity: 0; transition: opacity 0.5s; }
-#h-banner.on { opacity: 1; } #h-banner.warn { color: var(--amber); } #h-banner.bad { color: var(--red); }
+#h-banner.on { opacity: 1; } #h-banner.warn { color: var(--amber); } #h-banner.bad { color: var(--red); } #h-banner.title { font-size: 34px; letter-spacing: 0.32em; color: #e8f4f2; text-shadow: 0 0 24px rgba(127, 227, 212, 0.45); }
 #h-bl { position: absolute; left: 22px; bottom: 20px; width: 220px; }
 #h-seen { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--dim); }
 #h-seen em { flex: 1; height: 4px; background: rgba(255, 255, 255, 0.14); } #h-seen i { display: block; height: 100%; width: 0; background: var(--amber); } #h-seen.hot i { background: var(--red); } #h-seen.hot span { color: var(--red); }
@@ -95,7 +95,7 @@ button.primary:hover:not(:disabled) { background: #1b5650; }
 #h-arrow { width: 0; height: 0; margin: 0 auto 6px; border-left: 11px solid transparent; border-right: 11px solid transparent; border-bottom: 30px solid var(--teal); filter: drop-shadow(0 0 6px rgba(127, 227, 212, 0.7)); }
 #h-marks span { position: absolute; transform: translate(-50%, -100%); font-size: 12px; padding: 2px 6px; background: rgba(6, 10, 12, 0.7); border: 1px solid var(--amber); color: var(--amber); border-radius: 2px; white-space: nowrap; }
 #h-mapwrap { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: rgba(4, 8, 10, 0.93); border: 1px solid var(--line); padding: 12px; border-radius: 4px; }
-#h-map { display: block; width: min(760px, 88vw); height: auto; } #h-mapwrap p { margin: 8px 0 0; font-size: 12px; color: var(--dim); text-align: center; }
+#h-map { display: block; width: min(1180px, 92vw); height: auto; } #h-mapwrap p { margin: 8px 0 0; font-size: 12px; color: var(--dim); text-align: center; }
 #h-down { position: absolute; left: 50%; top: 62%; transform: translateX(-50%); text-align: center; width: min(520px, 86vw); }
 #h-down b { display: block; font-size: 22px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--red); } #h-down span { display: block; margin: 4px 0 8px; font-size: 13px; color: #cfe0e2; }
 #h-down em { display: block; height: 5px; background: rgba(255, 255, 255, 0.14); } #h-down i { display: block; height: 100%; background: var(--red); }
@@ -147,7 +147,7 @@ body.touch #h-log { bottom: 3%; width: min(480px, 44vw); }
 body.touch #h-log span { font-size: 14px; }
 body.touch #h-scan { bottom: 20%; }
 body.touch #h-down { top: 56%; }
-#h-map { width: min(760px, 88vw, 104vh); }
+#h-map { width: min(1180px, 94vw, 300vh); }
 @media (max-height: 520px) {
   .card { padding: 14px 18px 12px; } h1 { font-size: 28px; margin: 2px 0 6px; } h2 { font-size: 20px; } .lede { font-size: 13.5px; margin-bottom: 8px; } .eyebrow { font-size: 10.5px; }
   #overlay { padding: 8px; align-items: flex-start; } .row { margin: 6px 0; }

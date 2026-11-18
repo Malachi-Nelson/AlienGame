@@ -102,7 +102,7 @@ await dp.click('[data-bind="lamp:0"]'); await dp.keyboard.press('KeyZ');
 await dp.click('#c-back'); await dp.click('#m-solo'); await dp.waitForFunction('__los.session.rep.phase === 1 && __los.player.mid === __los.session.rep.mid');
 await dp.keyboard.press('KeyZ'); await dp.waitForTimeout(300);
 ok(await dp.evaluate(() => __los.player.light), 'the rebound key works in a match');
-ok(await dp.evaluate(() => /Hold Q/.test(document.getElementById('h-obj').textContent)), 'prompts name the bound keys');
+ok(await dp.evaluate(() => /Hold E at each/.test(document.getElementById('h-obj').textContent) && /Q finds them/.test(document.getElementById('h-obj').textContent)), 'prompts name the bound keys');
 ok(await dp.evaluate(() => JSON.parse(localStorage.getItem('los-settings')).binds.lamp[0] === 'KeyZ'), 'bindings are saved for next time');   // (the harness rewrites settings on reload, so read them directly)
 await dp.evaluate(() => document.getElementById('p-leave').click()); await dp.waitForFunction('__los.hud.screen === "title"');
 ok(await dp.evaluate(() => [...document.querySelectorAll('#m-keys div')].some(d => d.querySelector('dt').textContent === 'Z' && /Lamp/.test(d.querySelector('dd').textContent))), 'and the title card lists them');

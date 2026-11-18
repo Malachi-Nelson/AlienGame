@@ -56,16 +56,17 @@ const applyQuality = () => { gfx.setQuality(settings.q); lamp.castShadow = gfx.q
 applyQuality();
 
 let wantPause = false, spectate = null, cycle = false, lampGain = 1, slowAcc = 0, slowN = 0, fade = 0, matchT = 0, crMuffled = false, muffT = 0, rattleT = 14, klaxT = 0, scanT = 0, lastStatus = ST.ALIVE, ejectT = 0, endShown = false, netT = 0;
-let growlT = 2, recorded = -1, crNear = 1.3, crackN = 0;
+let growlT = 2, recorded = -1, crNear = 1.3, crackN = 0, crawlT = 0, ventAnim = { kind: 0, t: 9 };
+const stWas = new Float32Array(L.stations.length), stT = new Float32Array(L.stations.length);      // how far along each station was a moment ago, so its work can be heard
 const crView = {};       // the creature as this player's view draws it
-let catchT = -1, quakeT = 0, briefed = false, nearCr = 0;      // being caught (seconds since the lunge, -1 when not); the borehole shifting; whether this match's conditions have been read out; how close the creature is, 0..1
+let catchT = -1, quakeT = 0, briefed = false, nearCr = 0;      // being caught (seconds since the lunge, -1 when not); the hull shuddering; whether this match's conditions have been read out; how close the creature is, 0..1
 const beeps = new Map(), steps = new Map(), others = [], tmpV = new THREE.Vector3(), eye = { x: 0, y: 0, z: 0 };
-const GEN = { x: 114, z: 76 };
+const GEN = { x: 30, z: 19 };          // the reactor: its hum, and where the creature first stirs
 
 const session = new Session(L, {
   onLayout: lay => { if (lay) { s3.setLayout(lay); sparks.setLayout(lay); } },
   onPhase: (old, ph) => {
-    if (ph === PH.PLAY) { fade = 0; matchT = 0; endShown = false; spectate = null; hud.roomName = ''; hud.banner('Find the eight crew tags', 5); briefed = false; catchT = -1; quakeT = 0; scares.reset(); lights.reset(session.rep.layout && session.rep.layout.zones); }
+    if (ph === PH.PLAY) { fade = 0; matchT = 0; endShown = false; spectate = null; hud.roomName = ''; hud.banner(L.sections[0].name.toUpperCase() + ' · restart the reactor', 5, 'title'); briefed = false; stWas.fill(0); ventAnim.kind = 0; catchT = -1; quakeT = 0; scares.reset(); lights.reset(session.rep.zonesNow()); }
     if (ph === PH.END) showEnd();
     if (ph === PH.LOBBY && old !== PH.LOBBY) { player.mid = -1; if (session.mode === 'solo') leave(); }
   },
@@ -209,7 +210,35 @@ function onEvent(e) {
       if (player.hidden === e[2]) { if (e[3] === 1) caught(); else if (e[3] === 2) { hud.banner('It did not find you', 3); if (cr.has) sound.voice('hiss', cr.x, cr.z, false); } else { player.shake = 1.0; buzz(120); } }
       break;
     }
-    case 'wake': sound.wakeCall(cr.has ? cr.x : GEN.x, cr.has ? cr.z : GEN.z); lights.dip(1.5); hud.feed('Something below has started to move.'); break;
+    case 'wake': sound.wakeCall(cr.has ? cr.x : GEN.x, cr.has ? cr.z : GEN.z); lights.dip(1.5); hud.feed('Something aboard has started to move.'); break;
+    // the ship
+    case 'station': {
+      const st = L.stations[e[2]]; if (!st) break; sound.stationDone(st.x, st.z);
+      const n = L.stations.filter(o => o.kind === st.kind && rep.stProg[o.id] >= 1).length + (rep.stProg[st.id] >= 1 ? 0 : 1);
+      if (st.kind === 'pump') hud.feed(`Coolant pump ${n} of 3 is running.${n >= 3 ? ' Now the reactor lever.' : ''}`);
+      else if (st.kind === 'terminal') hud.feed(`Launch codes: ${n} of 3 downloaded.`);
+      else if (st.kind === 'uplink') hud.feed('The bridge has the codes.');
+      break;
+    }
+    case 'reactor': sound.reactor(); hud.banner('The reactor is running', 4); hud.feed('Power is back in engineering.'); break;
+    case 'bulkopen': {
+      const sc = L.sections[e[2]], d = L.doors[sc.bulkOut], nx = L.sections[e[2] + 1];
+      sound.bulkhead(d.x, d.z, clamp01(1 - Math.hypot(d.x - cam.position.x, d.z - cam.position.z) / 60));
+      hud.banner(`The bulkhead to the ${nx.name} is open`, 6); hud.feed('It heard that. Get everyone through: it shuts behind the last of you.');
+      break;
+    }
+    case 'section': {
+      const sc = L.sections[e[2]]; sound.pickupTag();
+      hud.banner(sc.name.toUpperCase(), 5, 'title'); hud.feed({ tags: 'The crew tags are somewhere in the cargo hold. Their codes open the next bulkhead.', terminals: 'Three terminals on this deck hold the launch codes.', launch: 'The bridge is at the bow. The escape pod is in the pod bay.' }[sc.task] || '');
+      break;
+    }
+    case 'ventin': case 'ventout': {
+      const v = L.vents[e[2]]; if (!v) break; const d = Math.hypot(v.x - cam.position.x, v.z - cam.position.z);
+      sound.ventBang(v.x, v.z, muffled(v.x, v.z)); s3.ventKick(e[2]); ventAnim.kind = e[1] === 'ventin' ? 1 : 2; ventAnim.t = 0;
+      if (e[1] === 'ventout' && d < 14 && !muffled(v.x, v.z)) { player.shake = Math.max(player.shake, 0.8 * (1 - d / 14)); lights.dip(0.5); scares.fx.static = Math.max(scares.fx.static, 0.5 * (1 - d / 14)); buzz(80); }
+      if (d < 20) tip('vents', 'It uses the vents. Listen to the ceiling: you can hear it crawling, and the hatches bang when it goes in or comes out.');
+      break;
+    }
     case 'pwr': {
       const z = e[2], here = z === 9 || L.zoneOf[L.cellOf(cam.position.x, cam.position.z)] === z;
       if (e[3]) { sound.powerUp(here ? 1 : 0.12); hud.feed(z === 9 ? 'The power is back.' : e[4] ? `The ${ZONES[z]} has power for now.` : `Power is back in the ${ZONES[z]}.`); }
@@ -219,17 +248,39 @@ function onEvent(e) {
     case 'breaker': { const b = L.breakers[e[2]]; if (b) sound.breaker(b.x, b.z, muffled(b.x, b.z)); if (me && e[3] !== me.slot && e[3] >= 0) hud.feed(`${nameOf(e[3])} threw the ${ZONES[e[2]]} breaker`); break; }
     case 'gasp': if (mine) { player.breath = 0; player.gaspT = CFG.breath.gasp; player.hold = false; sound.gasp(); hud.banner('You had to breathe', 2.2, 'warn'); buzz(90); } else { const o = [...rep.players.values()].find(p => p.slot === e[2]), k = o && o.hidden >= 0 ? L.lockers[o.hidden] : null; if (k && Math.hypot(k.x - cam.position.x, k.z - cam.position.z) < 12) hud.feed(`${nameOf(e[2])} could not hold their breath`); } break;
     case 'fault': hud.feed(`Door fault. ${e[2]} doors have moved by themselves.`); break;
-    case 'quake': sound.quake(6.5); quakeT = 6.5; lights.dip(1.0); hud.feed('The borehole is shifting. Nothing carries far over that.'); buzz([200, 100, 200, 100, 300]); break;
+    case 'quake': sound.quake(6.5); quakeT = 6.5; lights.dip(1.0); hud.feed('The hull is groaning. Nothing carries far over that.'); buzz([200, 100, 200, 100, 300]); break;
     case 'down': if (mine) { sound.downed(); player.shake = 1.4; buzz(350); } else hud.feed(`${nameOf(e[2])} is down`); break;
     case 'dead': if (!mine) hud.feed(`${nameOf(e[2])} is gone`); break;
     case 'rev': if (mine) { sound.revived(); hud.banner('Back on your feet', 3); } else hud.feed(`${nameOf(e[3])} picked up ${nameOf(e[2])}`); break;
     case 'wind': if (mine) { sound.revived(); hud.banner('It left you for dead. You will not survive another.', 6, 'warn'); } break;
-    case 'liftready': hud.banner('All eight tags. Get back to the Dock and call the lift.', 7); sound.pickupTag(); break;
-    case 'liftcall': hud.banner(`Lift called. ${e[3] || CFG.lift.call} seconds. It will hear the alarm.`, 6, 'warn'); break;
-    case 'liftarr': hud.banner('The lift is here. Get on.', 6); sound.liftArrive(L.lift.x, L.lift.z); break;
+    case 'liftready': hud.banner('Codes uploaded. Prime the escape pod in the pod bay.', 7); sound.pickupTag(); break;
+    case 'liftcall': hud.banner(`Pod primed. ${e[3] || CFG.lift.call} seconds to launch. It will hear the alarm.`, 6, 'warn'); break;
+    case 'liftarr': hud.banner('The pod hatch is open. Get in.', 6); sound.liftArrive(L.lift.x, L.lift.z); break;
+    case 'liftgo': sound.podLaunch(); break;
     case 'join': hud.feed(`${nameOf(e[2])} joined`); break;
     case 'leave': hud.feed('A crew member dropped out'); break;
   }
+}
+// what the crew has to do now, in a sentence, and the pips under the section's name
+function objectiveText(rep, lf) {
+  const sc = L.sections[rep.sec], useK = TOUCH ? 'USE' : input.label('use'), scanK = TOUCH ? 'SCAN' : input.label('scan');
+  const done = kind => L.stations.filter(o => o.kind === kind && o.sec === rep.sec && rep.stProg[o.id] >= 1).length;
+  if (rep.secDone && sc.bulkOut >= 0) return `The bulkhead to the ${L.sections[rep.sec + 1].name} is open. Everyone through: it shuts behind the last of you.`;
+  if (sc.task === 'reactor') return done('pump') < 3 ? `Restart the reactor: bring the coolant pumps back online (${done('pump')} of 3). Hold ${useK} at each. ${scanK} finds them.` : 'The pumps are running. Throw the reactor lever in Reactor Control.';
+  if (sc.task === 'tags') return `Find the crew tags in the cargo hold (${rep.tagCount()} of ${CFG.TAGS}). Their codes open the next bulkhead. ${scanK} finds them.`;
+  if (sc.task === 'terminals') return `Download the launch codes from three terminals (${done('terminal')} of 3). Hold ${useK} at each. ${scanK} finds them.`;
+  if (lf.state === LIFT.LOCKED) return 'Upload the launch codes at the uplink on the bridge, at the bow.';
+  if (lf.state === LIFT.READY) return 'Prime the escape pod from its console in the pod bay.';
+  if (lf.state === LIFT.CALLED) return `The pod launches in ${Math.ceil(lf.timer)} s. Stay alive.`;
+  if (lf.state === LIFT.ARRIVED) return `Get in the pod. It goes in ${Math.max(0, Math.ceil(lf.board))} s.`;
+  return '';
+}
+function pipsNow(rep) {
+  const sc = L.sections[rep.sec], n = (kind) => L.stations.filter(o => o.kind === kind && o.sec === rep.sec && rep.stProg[o.id] >= 1).length;
+  if (sc.task === 'reactor') return { n: 4, done: n('pump') + n('lever') };
+  if (sc.task === 'tags') return { n: CFG.TAGS, done: rep.tagCount() };
+  if (sc.task === 'terminals') return { n: 3, done: n('terminal') };
+  return { n: 2, done: n('uplink') + (rep.lift.state >= LIFT.CALLED ? 1 : 0) };
 }
 const tg0Sealed = t => !!t && t.dead && /^Sealed/.test(t.text);
 // It has you. For a second the view is not yours: it turns to face what caught you.
@@ -238,19 +289,19 @@ const zoneNames = (lay, kind) => { const n = []; lay.zones.forEach((p, z) => { i
 // what is different about this match, read out once it has started
 function brief(lay) {
   if (lay.plain) return;
-  const dead = zoneNames(lay, PWR.DEAD), fail = zoneNames(lay, PWR.FAILING);
-  if (dead) hud.feed(`No power in ${dead}.`); if (fail) hud.feed(`The lights are failing in ${fail}.`);
-  if (!dead && !fail) hud.feed('Power is on throughout.');
+  hud.feed('The ship is dark: the reactor is down. Bring the coolant pumps back, then throw the reactor lever.');
+  const z2 = Object.assign({}, lay, { zones: lay.zones.map((p, z) => (z === 0 ? PWR.ON : p)) }), dead = zoneNames(z2, PWR.DEAD), fail = zoneNames(z2, PWR.FAILING);
+  if (dead) hud.feed(`Further in, no power on the ${dead.replace(/^the /, '')}.`); if (fail) hud.feed(`The lights are failing on the ${fail.replace(/^the /, '')}.`);
   if (lay.sealed.length) hud.feed(`${lay.sealed.length} doors are sealed shut. The schematic marks them in red.`);
 }
 function showEnd() {
   const rep = session.rep, r = rep.result || { win: 0, t: 0, out: [], tags: 0 }, me = rep.me, out = me && me.status === ST.OUT, n = rep.players.size;
   const mm = Math.floor(r.t / 60), ss = String(r.t % 60).padStart(2, '0');
   hud.setEnd({
-    eyebrow: r.win ? 'Lift away' : 'No signal',
+    eyebrow: r.win ? 'Pod away' : 'No signal',
     title: out ? 'You made it out' : r.win ? 'Left behind' : 'Signal lost',
-    text: out ? 'The lift is climbing. Below you, Outpost Ymir goes quiet again.' : r.win ? 'The lift went without you.' : 'Nobody reached the surface. The outpost keeps its tags.',
-    stats: [[`${mm}:${ss}`, 'Time'], [`${r.tags} / ${CFG.TAGS}`, 'Tags'], [`${r.out.length} / ${n}`, 'Got out']],
+    text: out ? 'The pod falls away from the hull. Behind you, the Ymir goes dark again.' : r.win ? 'The pod went without you.' : 'Nobody reached the pod. The Ymir keeps drifting.',
+    stats: [[`${mm}:${ss}`, 'Time'], [L.sections[r.sec | 0].name, r.win ? 'Got off from' : 'Got as far as'], [`${r.out.length} / ${n}`, 'Got out']],
     again: session.mode === 'solo' ? 'Go again' : '',
     extra: endExtra(rep.layout),
   });
@@ -265,12 +316,12 @@ function showEnd() {
   endShown = true; unlock();
 }
 
-// which creature it was and what state the outpost was in, for the end card
+// which creature it was and what state the ship was in, for the end card
 function endExtra(lay) {
   if (!lay || lay.plain) return null;
   const tr = TRAITS[lay.trait] || TRAITS[0], dead = zoneNames(lay, PWR.DEAD), fail = zoneNames(lay, PWR.FAILING), bits = [];
   if (dead) bits.push(`No power in ${dead}.`); if (fail) bits.push(`Failing lights in ${fail}.`); if (lay.sealed.length) bits.push(`${lay.sealed.length} doors sealed.`);
-  return { head: 'What was down there', name: tr.name, line: tr.line, cond: bits.join(' ') };
+  return { head: 'What was aboard', name: tr.name, line: tr.line, cond: bits.join(' ') };
 }
 
 // ---------------------------------------------------------------------------------------------- one frame
@@ -292,7 +343,8 @@ function frame() {
   // --- the local player
   if (playing) {
     const me = rep.me;
-    if (player.mid !== rep.mid) { player.spawn(me.slot); player.mid = rep.mid; lastStatus = ST.ALIVE; }
+    // a new match (going again alone restarts the count, so the seed tells it apart): back to the start
+    if (player.mid !== rep.mid || player.seed !== rep.seed) { player.spawn(me.slot, rep.sec); player.mid = rep.mid; player.seed = rep.seed; lastStatus = ST.ALIVE; }
     if (me.status !== lastStatus) { lastStatus = me.status; if (me.status === ST.DEAD || me.status === ST.OUT) spectate = null; }
     player.status = me.status;
     const inp = { fwd: 0, right: 0, run: false, crouchToggle: false, dx: 0, dy: 0 };
@@ -314,7 +366,7 @@ function frame() {
     if (quakeT > 0) { quakeT -= dt; player.shake = Math.max(player.shake, 0.1 + 0.5 * Math.sin(Math.PI * clamp01(quakeT / 6.5))); }
     session.others(now, others);
     player.findTarget(rep, others);
-    const alive = me.status === ST.ALIVE; player.rv = -1;
+    const alive = me.status === ST.ALIVE; player.rv = -1; player.ws = -1;
     if (active && alive) {
       const tg = player.target;
       if (input.hit('use') && tg && !tg.dead) {
@@ -323,6 +375,7 @@ function frame() {
         else if (tg.kind === 'unhide') { const k = L.lockers[player.hidden]; player.leaveLocker(); if (k) sound.locker(k.x, k.z, false, false); }
       }
       if (input.held('use') && tg && tg.kind === 'revive') player.rv = tg.slot;
+      if (input.held('use') && tg && tg.kind === 'station') { player.ws = tg.i; tip('station', 'Keep holding until the lamp goes green. Letting go keeps what you have done, but the noise carries.'); }
       if (player.hidden < 0) {
         if (input.hit('lamp')) { player.light = !player.light; sound.lamp(player.light); }
         if (input.hit('throw') && me.decoys > 0) session.act('G', Math.round(player.yaw * 1000), Math.round(player.pitch * 1000));
@@ -341,7 +394,7 @@ function frame() {
     if (tg0Sealed(player.target)) tip('sealed', 'A door with bars and a red lamp is sealed for this match. The schematic marks them in red.');
     // two people went for the same locker: the host says who got it
     if (player.hidden >= 0 && me.hidden !== player.hidden) { ejectT += dt; if (ejectT > 1 && others.some(o => o.hidden === player.hidden)) { player.leaveLocker(); hud.feed('Someone is already in there'); } } else ejectT = 0;
-    session.local.x = player.x; session.local.z = player.z; session.local.yaw = player.yaw; session.local.pitch = player.pitch; session.local.f = player.flags(); session.local.lk = player.hidden; session.local.rv = player.rv;
+    session.local.x = player.x; session.local.z = player.z; session.local.yaw = player.yaw; session.local.pitch = player.pitch; session.local.f = player.flags(); session.local.lk = player.hidden; session.local.rv = player.rv; session.local.ws = player.ws;
     if ((me.status === ST.DEAD || me.status === ST.OUT) && (input.hit('throw') || input.hit('use'))) cycle = true;          // click: watch someone else
     matchT += dt;
     if (!briefed && matchT > 2.6 && rep.layout) { briefed = true; brief(rep.layout); }
@@ -353,7 +406,8 @@ function frame() {
   session.tick(now);
   rep = session.rep;
   const showWorld = inGame && rep.phase !== PH.LOBBY;
-  lights.update(dt, showWorld && rep.layout ? rep.layout.zones : null, showWorld ? rep.zoneOff : 0, showWorld ? nearCr : 0, !settings.scares);
+  s3.zones = rep.zonesNow ? rep.zonesNow() : s3.zones;
+  lights.update(dt, showWorld && rep.layout ? rep.zonesNow() : null, showWorld ? rep.zoneOff : 0, showWorld ? nearCr : 0, !settings.scares);
   s3.setPower(lights.lv, lights.all);
   s3.update(dt, inGame ? rep : null);
 
@@ -361,7 +415,7 @@ function frame() {
   const me = rep.me; let watching = null, camYaw = 0, camPitch = 0, lampOn = false, crouched = false;
   const punch = catchT < 0 ? 0 : catchT < 0.12 ? catchT / 0.12 : clamp01(1 - (catchT - 0.12) / 0.6);       // the view lurches in as it lands
   gfx.resize(window.innerWidth, window.innerHeight); cam.aspect = window.innerWidth / window.innerHeight; cam.fov = 72 - 14 * punch; cam.updateProjectionMatrix();
-  if (!showWorld || !me) {                // the menu: a slow walk round the borehole
+  if (!showWorld || !me) {                // the menu: a slow walk round the reactor
     const a = now / 1000 * 0.05, px = s3.pit.x + Math.cos(a) * 9.6, pz = s3.pit.z + Math.sin(a) * 9.6;
     cam.position.set(px, 2.1, pz); camYaw = yawOf(s3.pit.x - px, s3.pit.z - pz) + 0.5; camPitch = 0.12; cam.rotation.set(camPitch, camYaw, 0);
   } else if ((me.status === ST.DEAD || me.status === ST.OUT) && others.some(o => o.status === ST.ALIVE || o.status === ST.DOWN)) {
@@ -393,12 +447,14 @@ function frame() {
   sound.listener(cam.position.x, cam.position.y, cam.position.z, fx, fy, fz);
 
   // --- the creature and the crew
-  const cr = rep.creature, crOn = showWorld && cr.has && rep.phase !== PH.LOBBY;
+  const cr = rep.creature, crIn = cr.has && cr.vent && !cr.climb, crOn = showWorld && cr.has && rep.phase !== PH.LOBBY && !crIn;
   if (crOn !== creature.root.visible) creature.setVisible(crOn);
   let dist = 999;
+  ventAnim.t += dt;
+  if (showWorld && cr.has && rep.phase !== PH.LOBBY) dist = Math.hypot(cr.x - cam.position.x, cr.z - cam.position.z);
+  if (showWorld && crIn && rep.phase === PH.PLAY && dist < 32) { crawlT -= dt; if (crawlT <= 0) { crawlT = 0.32 + Math.random() * 0.4; sound.ventCrawl(cr.x, cr.z); } }       // overhead, moving
   if (crOn) {
     muffT -= dt; if (muffT <= 0) { muffT = 0.2; crMuffled = muffled(cr.x, cr.z); }
-    dist = Math.hypot(cr.x - cam.position.x, cr.z - cam.position.z);
     const ahead = dist > 0.05 ? ((cr.x - cam.position.x) * hx + (cr.z - cam.position.z) * hz) / dist : 1, onMe = me && cr.tgt === me.slot, st = cr.state;
     cr.shine = lampOn && !crMuffled && dist < 26 && ahead > 0.88 ? 1 : 0;                  // your lamp is on it: with its own lights out, they still glint
     // its head follows you: when it is looking for you, waiting for you or after you, and as soon as it starts to notice you
@@ -407,6 +463,9 @@ function frame() {
     // eyes; so in this view it is held back to arm's length, and what you get is its face.
     crNear += ((st === CS.ATTACK || catchT >= 0 ? 2.4 : 1.3) - crNear) * Math.min(1, dt * 9);
     Object.assign(crView, cr);
+    crView.climb = 0; crView.lift = 0;
+    if (cr.climb && ventAnim.kind === 1) { crView.climb = 1; crView.lift = clamp01(ventAnim.t / CFG.creature.climb); }           // reaching up into the hatch, and drawn up through it
+    else if (ventAnim.kind === 2 && ventAnim.t < 1.3) { crView.climb = 2; crView.lift = clamp01(1 - ventAnim.t / 0.22); }       // dropped out of one, and landed in a crouch
     if (dist < crNear && dist > 0.05) { const k = crNear / dist; crView.x = cam.position.x + (cr.x - cam.position.x) * k; crView.z = cam.position.z + (cr.z - cam.position.z) * k; }
     creature.update(dt, crView, (x, z, sp) => { if (dist < 55) sound.tick(x, z, sp, crMuffled); });
     if (creature.cracks !== crackN) { crackN = creature.cracks; if (dist < 16 && !cr.lampsOut || dist < 8) sound.crack(cr.x, cr.z, crMuffled); }
@@ -422,7 +481,7 @@ function frame() {
   }
   if (showWorld) {
     for (const [id, d] of rep.decoys) { if (d.state !== 1) continue; let t = (beeps.get(id) || 0) - dt; if (t <= 0) { t = 0.55; sound.beep(d.x, d.z, muffled(d.x, d.z)); } beeps.set(id, t); }
-    if (rep.lift.state === LIFT.CALLED && rep.phase === PH.PLAY) { klaxT -= dt; if (klaxT <= 0) { klaxT = 1.35; sound.klaxon(L.lift.x + 6, L.lift.z); } }
+    if (rep.lift.state === LIFT.CALLED && rep.phase === PH.PLAY) { klaxT -= dt; if (klaxT <= 0) { klaxT = 1.35; sound.klaxon(L.lift.alarm.x, L.lift.alarm.z); } }
   }
 
   // --- how close it is, as the suit shows it
@@ -437,9 +496,13 @@ function frame() {
   sound.update(dt, { static: showWorld ? stat : 0, danger: showWorld && me && me.status === ST.ALIVE ? clamp01((hunted ? 0.7 : 0) + stat * 0.5 + (player.hold ? 0.4 + 0.5 * (1 - player.breath) : 0)) : 0, winded: playing ? clamp01(1 - player.stamina / 45) : 0, gen: showWorld ? clamp01(1 - Math.hypot(cam.position.x - GEN.x, cam.position.z - GEN.z) / 30) : 0,
     tension: showWorld ? clamp01(stat * 0.9 + (hunted ? 0.45 : 0) + (inDark ? 0.21 : 0.05)) : 0.04, hiding: playing && !!me && me.status === ST.ALIVE && player.hidden >= 0, holding: playing && player.hold });
   if (showWorld) sparks.update(dt, cam.position, !settings.scares, muffled);
+  if (showWorld && rep.phase === PH.PLAY) for (const st of L.stations) {
+    const p = rep.stProg[st.id]; if (p > stWas[st.id] && p < 1) { stT[st.id] -= dt; if (stT[st.id] <= 0) { stT[st.id] = st.kind === 'pump' ? 1.0 : 0.7; sound.stationWork(st.kind, st.x, st.z, muffled(st.x, st.z)); } } else stT[st.id] = 0;
+    stWas[st.id] = p;
+  }
   if (playing && me && me.status === ST.ALIVE) {
     if (nearCr > 0.2) tip('near', 'The lights stutter when it is close. Crouch, lamp off, and listen for the tapping.');
-    if (inDark) tip('dark', 'No power in this wing. The red lamps are emergency lighting. Every wing has a yellow breaker box that can bring its power back for a while.');
+    if (inDark) tip('dark', 'No power here. The red lamps are emergency lighting. Every deck has a yellow breaker box that can bring its power back for a while.');
   }
   scares.update(dt, { playing, alive: !!me && me.status === ST.ALIVE && !watching, hidden: player.hidden, scares: settings.scares, calm: !awake || dist > 28, cam: cam.position, yaw: camYaw, fx: hx, fz: hz, lampOn, rep, others });
   if (scares.fx.shake) player.shake = Math.max(player.shake, scares.fx.shake); if (scares.fx.dip) lights.dip(scares.fx.dip);
@@ -449,18 +512,18 @@ function frame() {
   let scan = null;
   if (playing && player.scan && me.status === ST.ALIVE && rep.layout) {
     let tx = 0, tz = 0, bd = 1e9, label = 'TAG';
-    if (rep.lift.state >= LIFT.READY) { const c = rep.lift.state >= LIFT.ARRIVED ? L.lift : L.lift.console; tx = c.x; tz = c.z; bd = Math.hypot(tx - player.x, tz - player.z); label = 'LIFT'; }
-    else rep.layout.tags.forEach((t, i) => { if (rep.tagBits & (1 << i)) return; const d = Math.hypot(t.x - player.x, t.z - player.z); if (d < bd) { bd = d; tx = t.x; tz = t.z; } });
+    const sc = L.sections[rep.sec], near = (x, z, lab) => { const d = Math.hypot(x - player.x, z - player.z); if (d < bd) { bd = d; tx = x; tz = z; label = lab; } };
+    if (rep.secDone && sc.bulkOut >= 0) { const d = L.doors[sc.bulkOut]; near(d.x, d.z, 'BULKHEAD'); }
+    else if (rep.lift.state >= LIFT.READY) { const c = rep.lift.state >= LIFT.ARRIVED ? L.lift : L.lift.console; near(c.x, c.z, 'POD'); }
+    else if (sc.task === 'tags') rep.layout.tags.forEach((t, i) => { if (!(rep.tagBits & (1 << i))) near(t.x, t.z, 'TAG'); });
+    else { const pumps = L.stations.every(o => o.kind !== 'pump' || rep.stProg[o.id] >= 1); for (const st of L.stations) { if (st.sec !== rep.sec || rep.stProg[st.id] >= 1 || !rep.layout.stations.includes(st.id) || (st.kind === 'lever' && !pumps)) continue; near(st.ax, st.az, st.kind.toUpperCase()); } }
     if (bd < 1e9) { const rel = wrapAngle(player.yaw - yawOf(tx - player.x, tz - player.z)); scan = { angle: rel, label: `${label} · ${Math.max(5, Math.round(bd / 5) * 5)} m` }; if (scanT <= 0) { scanT = 1.3; sound.scanPing(clamp01(1 - Math.abs(rel) / Math.PI)); } }
   }
   const lf = rep.lift; let objective = '';
   if (playing) {
     if (me.status === ST.DEAD) objective = watching ? `You are gone. Watching ${watching.name}. ${TOUCH ? 'Tap USE' : 'Press ' + input.label('use')} to switch.` : 'You are gone.';
     else if (me.status === ST.OUT) objective = 'You are out.';
-    else if (lf.state === LIFT.LOCKED) objective = TOUCH ? 'Find the crew tags. SCAN points to the nearest.' : `Find the crew tags. Hold ${input.label('scan')} for the scanner.`;
-    else if (lf.state === LIFT.READY) objective = 'Every tag is in. Call the lift from the panel in the Dock.';
-    else if (lf.state === LIFT.CALLED) objective = `Lift arrives in ${Math.ceil(lf.timer)} s. Stay alive.`;
-    else if (lf.state === LIFT.ARRIVED) objective = `Get on the lift. It leaves in ${Math.max(0, Math.ceil(lf.board))} s.`;
+    else objective = objectiveText(rep, lf);
   }
   const marks = [];
   if (playing) for (const o of others) {
@@ -474,10 +537,10 @@ function frame() {
   const mapPlayers = []; if (playing) { mapPlayers.push({ x: player.x, z: player.z, yaw: player.yaw, slot: me.slot, status: me.status, me: true }); for (const o of others) mapPlayers.push({ x: o.x, z: o.z, slot: o.slot, status: o.status }); }
   const roster = []; if (playing) for (const p of rep.players.values()) if (p.id !== session.id) roster.push(p);
   hud.update(dt, {
-    show: playing && rep.phase === PH.PLAY, tags: rep.tagCount(), objective, bars, roster, room: playing ? L.roomName(cam.position.x, cam.position.z) : '',
-    prompt: tg, hold: revT ? revT.revProg : 0, hidden: playing && player.hidden >= 0, seen: playing && me ? me.aware : 0,
+    show: playing && rep.phase === PH.PLAY, pips: pipsNow(rep), cap: L.sections[rep.sec].name, objective, bars, roster, room: playing ? L.roomName(cam.position.x, cam.position.z) : '',
+    prompt: tg, hold: revT ? revT.revProg : tg && tg.kind === 'station' ? rep.stProg[tg.i] : 0, hidden: playing && player.hidden >= 0, seen: playing && me ? me.aware : 0,
     stamina: playing && player.hidden >= 0 ? player.breath : player.stamina / CFG.player.stamina, spent: playing && player.hidden >= 0 ? player.gaspT > 0 : player.spent, holding: player.hold, lamp: player.light, crouch: player.crouch, sounders: me ? me.decoys : 0,
-    scan, marks, map: playing && input.held('map') && !upright, mapPlayers, sealed: rep.layout ? rep.layout.sealed : null, dark: lights.want,
+    scan, marks, map: playing && input.held('map') && !upright, mapPlayers, sealed: rep.layout ? rep.layout.sealed : null, dark: lights.want, sec: rep.sec, secDone: rep.secDone, stations: rep.layout ? { act: rep.layout.stations, prog: rep.stProg } : null,
     down: down ? { title: 'Down', text: session.mode === 'solo' ? (me.wind ? 'Hold still.' : 'That was your second wind.') : (me.revProg > 0 ? 'Someone is picking you up' : 'A crewmate can pick you up'), frac: me.revProg > 0 ? me.revProg : me.timer / CFG.down.bleed } : null,
   });
 
@@ -522,5 +585,5 @@ try {
   w.onmessage = () => { if (session.mode !== 'menu' && (document.hidden || performance.now() - session.lastT > 90)) session.tick(performance.now()); };     // also covers a visible page whose drawing has been slowed right down
 } catch (e) { /* no workers: the match pauses while the host's tab is hidden */ }
 
-window.__los = { session, player, hud, gfx, sound, Sound, L, cam, settings, input, touch, s3, scares, lights, sparks, creature, record, layoutMatch, build: BUILD };
+window.__los = { ZONES, session, player, hud, gfx, sound, Sound, L, cam, settings, input, touch, s3, scares, lights, sparks, creature, record, layoutMatch, build: BUILD };
 requestAnimationFrame(frame);

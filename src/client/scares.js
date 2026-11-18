@@ -16,11 +16,11 @@ export const RADIO = [
   'nineteen days',
   'I can hear you walking',
   'stay out of the lockers. It knows',
-  'the lift will not come for one of us',
+  'the pod only holds six',
   'it is standing right there with its lights out',
-  'count the tags again',
+  'it is in the ceiling',
   'behind you',
-  'we should never have opened the bore',
+  'we should never have brought that ore aboard',
   'turn your lamp off',
   'it only looks like it has gone',
 ];
@@ -110,7 +110,7 @@ export class Scares {
   update(dt, v) {
     const fx = this.fx; fx.static = Math.max(0, fx.static - dt * 3.2); fx.shake = 0; fx.dip = 0;
     if (!this.sound.ctx) return;
-    // --- the outpost settling: something every ten to thirty seconds, from somewhere out of sight
+    // --- the ship settling: something every ten to thirty seconds, from somewhere out of sight
     this.ambT -= dt;
     if (this.ambT <= 0) { this.ambT = 10 + Math.random() * 20; this.ambient(v); }
     if (!v.playing || !v.alive) { if (this.ph) this.hide(); return; }

@@ -35,7 +35,7 @@ export class Hud {
       $(p + '-q').addEventListener('change', e => on.setting('q', e.target.value));
       $(p + '-scare').addEventListener('change', e => on.setting('scares', e.target.checked));
     }
-    const tags = $('h-tags'); for (let i = 0; i < CFG.TAGS; i++) tags.appendChild(document.createElement('i'));
+    this.pipN = -1;
     this.mapCtx = $('h-map').getContext('2d'); this.mapBase = null;
   }
   set(id, key, val, fn) { const k = id + key; if (this.cache[k] === val) return; this.cache[k] = val; fn($(id), val); }
@@ -68,7 +68,7 @@ export class Hud {
   }
   setEnd(o) { this.text('e-eyebrow', o.eyebrow); this.text('e-title', o.title); this.text('e-text', o.text); $('e-stats').innerHTML = o.stats.map(([v, k]) => `<div><b>${esc(v)}</b><span>${esc(k)}</span></div>`).join(''); this.text('e-again', o.again); this.show('e-again', !!o.again);
     const x = o.extra, e = $('e-extra'); e.hidden = !x; if (x) { e.querySelector('i').textContent = x.head; e.querySelector('b').textContent = x.name; e.querySelector('span').textContent = x.line; e.querySelector('em').textContent = x.cond; } }
-  setPause(solo) { this.text('p-text', solo ? 'The outpost waits while this is open.' : 'The match carries on without you while this is open.'); }
+  setPause(solo) { this.text('p-text', solo ? 'The ship waits while this is open.' : 'The match carries on without you while this is open.'); }
 
   // keyboard or touch: what the prompts and the key list on the title card say, and where the read-outs sit
   setTouch(on, input) {
@@ -104,7 +104,10 @@ export class Hud {
     this.show('hud', v.show); if (!v.show) return;
     if (this.bannerT > 0) { this.bannerT -= dt; if (this.bannerT <= 0) $('h-banner').className = ''; }
     if (this.logT > 0) { this.logT -= dt; if (this.logT <= 0) $('h-log').classList.remove('on'); }
-    const tags = $('h-tags').children; for (let i = 0; i < tags.length; i++) { const on = i < v.tags; if (tags[i]._on !== on) { tags[i]._on = on; tags[i].classList.toggle('on', on); } }
+    // the section's name, and a pip for each part of its job
+    this.text('h-cap', v.cap || '');
+    if (v.pips && v.pips.n !== this.pipN) { this.pipN = v.pips.n; const el = $('h-tags'); el.innerHTML = ''; for (let i = 0; i < v.pips.n; i++) el.appendChild(document.createElement('i')); }
+    const tags = $('h-tags').children; for (let i = 0; i < tags.length; i++) { const on = !!v.pips && i < v.pips.done; if (tags[i]._on !== on) { tags[i]._on = on; tags[i].classList.toggle('on', on); } }
     this.text('h-obj', v.objective);
     const bars = $('h-signal').querySelectorAll('i'); for (let i = 0; i < 5; i++) { const on = i < v.bars; if (bars[i]._on !== on) { bars[i]._on = on; bars[i].classList.toggle('on', on); } }
     this.cls('h-signal', 'low', v.bars <= 2); this.cls('h-signal', 'none', v.bars === 0);
@@ -144,17 +147,24 @@ export class Hud {
       for (const r of L.rooms) { if (r.kind !== 'room' || done.has(r.name) || r.x1 - r.x0 < 2) continue; done.add(r.name); const label = r.name.startsWith('Cabin ') ? r.name.slice(6) : r.name.toUpperCase(), px = (r.x0 + r.x1 + 1) / 2 * s, py = (r.z0 + r.z1 + 1) / 2 * s; x.fillStyle = 'rgba(0,0,0,0.55)'; const w = x.measureText(label).width + 6; x.fillRect(px - w / 2, py - 7, w, 14); x.fillStyle = '#cfe0e2'; x.fillText(label, px, py); }
     }
     // On a small screen the whole outpost would be too small to read, so show the part around you, enlarged.
-    const zoom = clamp(720 / (cv.clientWidth || cv.width), 1, 2.2), me = v.mapPlayers.find(p => p.me), vw = cv.width / zoom, vh = cv.height / zoom;
+    const zoom = clamp(1000 / (cv.clientWidth || cv.width), 1, 2.6), me = v.mapPlayers.find(p => p.me), vw = cv.width / zoom, vh = cv.height / zoom;
     const ox = zoom > 1 && me ? clamp(me.x / T * s - vw / 2, 0, cv.width - vw) : 0, oy = zoom > 1 && me ? clamp(me.z / T * s - vh / 2, 0, cv.height - vh) : 0;
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = '#05090b'; ctx.fillRect(0, 0, cv.width, cv.height);
     ctx.setTransform(zoom, 0, 0, zoom, -ox * zoom, -oy * zoom);
     ctx.drawImage(this.mapBase, 0, 0, cv.width, cv.height);
-    // what is different this match: wings with no power are shaded, and doors that are sealed shut are marked in red
+    // what is different this match: decks with no power are shaded, and doors that are sealed shut are marked in red
     if (v.dark) { ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'; for (const r of L.rooms) if (v.dark[r.zone] < 0.5) ctx.fillRect(r.x0 * s, r.z0 * s, (r.x1 - r.x0 + 1) * s + 0.5, (r.z1 - r.z0 + 1) * s + 0.5); }
+    // the sections the crew has not reached yet, and the ones sealed behind them, are greyed out; the bulkheads are drawn in their state
+    if (v.sec !== undefined) for (const sc of L.sections) {
+      if (sc.id === v.sec) continue; ctx.fillStyle = sc.id < v.sec ? 'rgba(0, 0, 0, 0.62)' : 'rgba(5, 9, 11, 0.55)'; ctx.fillRect(sc.x0 * s, 0, (Math.min(W - 1, sc.x1) - sc.x0 + 1) * s, H * s);
+      ctx.fillStyle = 'rgba(200, 220, 222, 0.5)'; ctx.font = '700 13px "Segoe UI", Arial, sans-serif'; ctx.textAlign = 'center'; ctx.fillText(sc.id < v.sec ? 'SEALED BEHIND YOU' : 'LOCKED', (sc.x0 + sc.x1) / 2 * s, 1.0 * s);
+    }
+    if (v.sec !== undefined) for (const d of L.doors) if (d.bulk >= 0) { const open = d.bulk === v.sec && v.secDone; ctx.fillStyle = open ? '#38ff8a' : '#ff4630'; for (const i of d.cells) ctx.fillRect((i % W) * s - s * 0.1, ((i / W) | 0) * s, s * 1.2, s); }
+    if (v.stations) for (const st of L.stations) { if (st.sec !== v.sec || !v.stations.act.includes(st.id)) continue; const done = v.stations.prog[st.id] >= 1; ctx.fillStyle = done ? '#38ff8a' : '#7fe3d4'; ctx.beginPath(); ctx.arc((st.cx + 0.5) * s, (st.cz + 0.5) * s, s * 0.55, 0, 7); ctx.fill(); }
     if (v.sealed) { for (const id of v.sealed) for (const i of L.doors[id].cells) { const x = (i % W) * s, y = ((i / W) | 0) * s; ctx.fillStyle = '#ff4630'; ctx.fillRect(x + s * 0.08, y + s * 0.08, s * 0.84, s * 0.84); ctx.strokeStyle = '#2a0703'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x + s * 0.2, y + s * 0.2); ctx.lineTo(x + s * 0.8, y + s * 0.8); ctx.moveTo(x + s * 0.8, y + s * 0.2); ctx.lineTo(x + s * 0.2, y + s * 0.8); ctx.stroke(); } }
     for (const p of v.mapPlayers) { ctx.fillStyle = SLOT_COLORS[p.slot % SLOT_COLORS.length]; ctx.globalAlpha = p.status === ST.ALIVE ? 1 : 0.5; ctx.beginPath(); ctx.arc(p.x / T * s, p.z / T * s, p.me ? 5 : 4, 0, 7); ctx.fill(); if (p.me) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(p.x / T * s, p.z / T * s); ctx.lineTo(p.x / T * s - Math.sin(p.yaw) * 11, p.z / T * s - Math.cos(p.yaw) * 11); ctx.stroke(); } }
     ctx.globalAlpha = 1; ctx.setTransform(1, 0, 0, 1, 0, 0);
-    const marks = (v.sealed && v.sealed.length ? ' Red: sealed doors.' : '') + (v.dark && Array.from(v.dark).some(p => p < 0.5) ? ' Shaded: no power.' : '') + ' Yellow: breakers.';
-    this.set('h-mapnote', 't', (zoom > 1 ? 'The part of the outpost around you. You are the bright dot; the creature is not shown.' : 'You are the bright dot. The schematic does not show the creature.') + marks, (e, t) => (e.textContent = t));
+    const marks = (v.sealed && v.sealed.length ? ' Red: sealed doors.' : '') + (v.dark && Array.from(v.dark).some(p => p < 0.5) ? ' Shaded: no power.' : '') + ' Yellow: breakers. Circles: what needs doing here.';
+    this.set('h-mapnote', 't', (zoom > 1 ? 'The part of the ship around you. You are the bright dot; the creature is not shown.' : 'You are the bright dot. The schematic does not show the creature.') + marks, (e, t) => (e.textContent = t));
   }
 }

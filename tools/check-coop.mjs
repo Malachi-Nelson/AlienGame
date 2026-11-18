@@ -20,6 +20,7 @@ ok(await until(A, '[...__los.session.rep.players.values()].filter(p => p.ready).
 await A.shot('c-lobby');
 await A.page.click('#l-start');
 for (const g of all) ok(await until(g, '__los.session.rep.phase === 1 && __los.session.rep.me && __los.player.mid === __los.session.rep.mid'), 'the match starts for ' + (g === A ? 'the leader' : g === B ? 'Bo' : 'Cy'));
+for (const g of all) { const st = await ev(g, () => ({ mode: __los.session.mode, ph: __los.session.rep.phase, mid: __los.session.rep.mid, pm: __los.player.mid, me: !!__los.session.rep.me, lay: !!__los.session.rep.layout })); if (!st.lay || st.pm !== st.mid) console.log('     state', JSON.stringify(st), g.errors.join(' | ').slice(0, 600)); }
 const slots = await Promise.all(all.map(g => ev(g, () => __los.session.rep.me.slot))); ok(new Set(slots).size === 3, `everyone has their own place (${slots})`);
 const seeds = await Promise.all(all.map(g => ev(g, () => __los.session.rep.layout.tags.map(t => t.cell).join()))); ok(seeds[0] === seeds[1] && seeds[1] === seeds[2], 'everyone has the same tags in the same places');
 const ids = await Promise.all(all.map(g => ev(g, () => __los.session.id)));
@@ -40,9 +41,9 @@ for (const g of all) ok(await until(g, '(__los.session.rep.tagBits & 8) !== 0'),
 ok(await ev(B, () => __los.session.rep.me.tags === 1 && __los.session.acts.length === 0), 'and Bo is credited, with nothing left unanswered');
 
 // a door, worked by a client
-await ev(Cc, () => { const p = __los.player; p.x = 34.6; p.z = 49.6; p.yaw = -Math.PI / 2; });
-const dId = await ev(A, () => __los.L.doorAt[__los.L.idx(18, 24)]), w0 = await ev(A, d => __los.session.world.doorWant[d], dId);
-ok(await until(Cc, '__los.player.target && __los.player.target.kind === "door"'), 'Cy reaches the dock door');
+await ev(Cc, () => { const p = __los.player; p.x = 12.4; p.z = 34; p.yaw = -Math.PI / 2; p.pitch = 0; });
+const dId = await ev(A, () => __los.L.doorAt[__los.L.idx(7, 16)]), w0 = await ev(A, d => __los.session.world.doorWant[d], dId);
+ok(await until(Cc, '__los.player.target && __los.player.target.kind === "door"'), 'Cy reaches the airlock door');
 await ev(Cc, () => __los.input.press('use'));
 ok(await until(B, `__los.session.rep.doorWant[${dId}] !== ${w0}`), 'Bo sees the door Cy worked');
 
@@ -68,10 +69,10 @@ ok(await until(K, `__los.session.hostId === '${H === B ? ids[1] : ids[2]}' && __
 const after = await ev(K, () => ({ tg: __los.session.rep.tagBits, mid: __los.session.rep.mid, ph: __los.session.rep.phase }));
 ok(after.tg === before.tg && after.mid === before.mid && after.ph === 1, 'the match carries on where it was');
 ok(await until(K, `__los.session.rep.time > ${before.t} + 3`, 40000), 'and time moves again');
-await ev(K, () => { const t = __los.session.rep.layout.tags[5], p = __los.player; p.x = t.x + 1.1; p.z = t.z; p.yaw = Math.PI / 2; });
+await ev(K, () => { const t = __los.session.rep.layout.tags[1], p = __los.player; p.x = t.x + 1.1; p.z = t.z; p.yaw = Math.PI / 2; });
 ok(await until(K, '__los.player.target && __los.player.target.kind === "tag"'), 'the follower reaches another tag');
 await ev(K, () => __los.input.press('use'));
-ok(await until(H, '(__los.session.rep.tagBits & 32) !== 0'), 'and the new leader grants it');
+ok(await until(H, '(__los.session.rep.tagBits & 2) !== 0'), 'and the new leader grants it');
 
 const st = relay.stats(); console.log(`relay carried ${st.count} messages, ${(st.bytes / 1024).toFixed(0)} kB`);
 for (const g of [B, Cc]) ok(g.errors.length === 0, 'no errors on a page' + (g.errors.length ? ':\n' + g.errors.join('\n') : ''));

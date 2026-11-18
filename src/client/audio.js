@@ -92,7 +92,7 @@ export class Sound {
   beep(x, z, muffled) { if (!this.ctx) return; const d = this.at(x, z, 0.2, 7, muffled, 90), t = this.now; this.tone('square', 2100, 2100, 0.08, 0.5, d, t); this.tone('square', 2650, 2650, 0.08, 0.5, d, t + 0.11); }
   klaxon(x, z) { if (!this.ctx) return; const d = this.at(x, z, 3.5, 9, false, 120), t = this.now, f = this.ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 1300; f.connect(d); this.tone('sawtooth', 392, 392, 0.55, 0.5, f, t, 0.03); this.tone('sawtooth', 311, 311, 0.6, 0.5, f, t + 0.6, 0.03); }
   liftArrive(x, z) { if (!this.ctx) return; const d = this.at(x, z, 2, 9, false, 120), t = this.now; this.burst(3, 1.3, 'lowpass', 150, 70, 0.7, d, t, this.brown, 0.4); this.tone('sine', 1046, 1046, 1.6, 0.4, d, t + 2.6); this.tone('sine', 1568, 1568, 1.4, 0.2, d, t + 2.6); }
-  // ---- the outpost settling, and the things that are only there to unsettle. None of them sounds like the creature's feet.
+  // ---- the ship settling, and the things that are only there to unsettle. None of them sounds like the creature's feet.
   creak(x, z) { if (!this.ctx) return; const d = this.at(x, z, 3, 8, true), t = this.now;
     if (Math.random() < 0.6) { const f = 60 + Math.random() * 50; this.tone('sawtooth', f, f * (0.7 + Math.random() * 0.7), 1.6 + Math.random() * 1.5, 1.1, d, t, 0.5); }
     else { for (let i = 0; i < 3; i++) this.burst(0.08, 0.9, 'bandpass', 700 + Math.random() * 900, 400, 4, d, t + i * (0.12 + Math.random() * 0.3)); } }
@@ -138,13 +138,37 @@ export class Sound {
     for (const f of [207.7, 220, 311.1, 440, 466.2, 622.3]) this.tone('sawtooth', f, f * 0.965, 1.0, 0.17, sh, t, 0.003);
     this.burst(0.65, 0.65 * hard, 'bandpass', 3400, 650, 0.7, null, t, null, 0.002); this.tone('sine', 82, 29, 0.95, 0.7 * hard, null, t, 0.003);
   }
-  // ---- the outpost failing
+  // ---- the ship failing
   powerDown(near = 1) { if (!this.ctx) return; const t = this.now, g = 0.25 + 0.75 * near; this.burst(0.03, 0.8 * g, 'bandpass', 1300, 1300, 3, null, t, null, 0.001); this.tone('sine', 150, 26, 1.4, 0.55 * g, null, t + 0.02, 0.01); this.tone('sawtooth', 100, 22, 1.2, 0.1 * g, null, t + 0.02, 0.01); this.burst(1.3, 0.25 * g, 'lowpass', 700, 50, 0.7, null, t, this.brown, 0.02); }
   powerUp(near = 1) { if (!this.ctx) return; const t = this.now, g = 0.25 + 0.75 * near; this.burst(0.03, 0.7 * g, 'bandpass', 1500, 1500, 3, null, t, null, 0.001); this.tone('sine', 34, 104, 0.9, 0.3 * g, null, t + 0.05, 0.3); this.tone('sine', 208, 208, 0.5, 0.06 * g, null, t + 0.5, 0.2); }
   // a breaker going over: a heavy clunk, and the hum of whatever it feeds coming up behind it
   breaker(x, z, muffled) { if (!this.ctx) return; const d = this.at(x, z, 1.4, 5, muffled, 120), t = this.now; this.tone('sine', 96, 38, 0.32, 1.3, d, t, 0.002); this.burst(0.05, 1.0, 'bandpass', 850, 400, 1.5, d, t, null, 0.001); this.burst(0.03, 0.6, 'highpass', 3000, 3000, 0.7, d, t + 0.02, null, 0.001); this.tone('sawtooth', 48, 100, 0.9, 0.22, d, t + 0.1, 0.4); }
   // a broken conduit arcing
   spark(x, z, muffled) { if (!this.ctx) return; const d = this.at(x, z, 2.5, 3, muffled), t = this.now, n = 3 + Math.floor(Math.random() * 5); for (let i = 0; i < n; i++) { const tt = t + Math.random() * 0.22; this.burst(0.012, 0.8, 'highpass', 4800, 3000, 0.7, d, tt, null, 0.001); this.tone('square', 90 + Math.random() * 60, 60, 0.03, 0.25, d, tt, 0.001); } }
+  // ---- the ship
+  // something heavy crawling through the duct over the ceiling: a knock, a scrape, and the panel flexing. Always muffled.
+  ventCrawl(x, z) { if (!this.ctx) return; const d = this.at(x, z, 3.6, 2.6, true, 40), t = this.now; this.tone('sine', 92 + Math.random() * 30, 48, 0.16, 0.9, d, t, 0.003); this.burst(0.09, 0.7, 'bandpass', 900, 380, 1.6, d, t, null, 0.002); if (Math.random() < 0.55) this.burst(0.35 + Math.random() * 0.3, 0.32, 'bandpass', 2200, 1100, 1.2, d, t + 0.08, null, 0.08); }
+  // a vent hatch slammed open from above, or from below: sheet metal and a hard knock
+  ventBang(x, z, muffled) { if (!this.ctx) return; const d = this.at(x, z, 3.0, 5, muffled, 90), t = this.now; this.tone('sine', 140, 60, 0.35, 1.2, d, t, 0.002); this.burst(0.06, 1.1, 'bandpass', 1700, 900, 1.4, d, t, null, 0.001); for (let i = 0; i < 6; i++) this.burst(0.05, 0.5 - i * 0.06, 'bandpass', 3000 + Math.random() * 1500, 2400, 5, d, t + 0.06 + i * 0.05, null, 0.001); this.burst(0.7, 0.25, 'highpass', 2600, 4200, 0.7, d, t + 0.05, null, 0.05); }
+  // a station being worked: the pumps clank and hiss, the terminals chirp
+  stationWork(kind, x, z, muffled) {
+    if (!this.ctx) return; const d = this.at(x, z, 1.4, kind === 'pump' ? 4 : 2.5, muffled, 70), t = this.now;
+    if (kind === 'pump') { this.tone('square', 62, 48, 0.25, 0.35, d, t, 0.004); this.burst(0.05, 0.8, 'bandpass', 1100, 700, 2, d, t, null, 0.001); this.burst(0.7, 0.3, 'highpass', 3000, 5000, 0.8, d, t + 0.12, null, 0.1); }
+    else if (kind === 'lever') { this.burst(0.08, 0.9, 'bandpass', 800, 500, 2, d, t, null, 0.002); this.tone('sine', 120, 70, 0.3, 0.6, d, t, 0.003); }
+    else for (let i = 0; i < 5; i++) { const f = 1200 + Math.floor(Math.random() * 6) * 220; this.tone('square', f, f, 0.05, 0.08, d, t + i * 0.09, 0.002); }
+  }
+  stationDone(x, z) { if (!this.ctx) return; const d = this.at(x, z, 1.4, 4, false, 80), t = this.now; this.tone('sine', 660, 660, 0.15, 0.22, d, t); this.tone('sine', 990, 990, 0.3, 0.22, d, t + 0.12); this.burst(0.06, 0.6, 'bandpass', 900, 600, 2, d, t, null, 0.001); }
+  // a bulkhead going: an alarm, the bolts, and a great deal of hydraulics
+  bulkhead(x, z, near) {
+    if (!this.ctx) return; const d = this.at(x, z, 2.2, 10, false, 200), t = this.now, g = 0.4 + 0.6 * near;
+    for (let i = 0; i < 3; i++) { this.tone('sawtooth', 440, 440, 0.32, 0.12 * g, d, t + i * 0.5, 0.01); this.tone('sawtooth', 330, 330, 0.18, 0.1 * g, d, t + i * 0.5 + 0.3, 0.01); }
+    for (let i = 0; i < 4; i++) this.burst(0.05, 0.9 * g, 'bandpass', 700, 400, 2, d, t + 1.5 + i * 0.12, null, 0.001);
+    this.burst(2.6, 0.7 * g, 'bandpass', 1800, 900, 0.9, d, t + 1.6, null, 0.15); this.tone('sine', 60, 38, 2.2, 0.8 * g, d, t + 1.7, 0.2);
+  }
+  // the reactor catching: a deep rising roar that settles into the hum
+  reactor() { if (!this.ctx) return; const t = this.now; this.tone('sine', 26, 64, 3.5, 0.9, null, t, 1.2); this.tone('sawtooth', 52, 128, 3.2, 0.12, null, t + 0.3, 1.0); this.burst(4, 0.5, 'lowpass', 120, 420, 0.8, null, t, this.brown, 1.6); this.burst(0.05, 0.8, 'bandpass', 1200, 1200, 3, null, t + 3.2, null, 0.001); }
+  // the pod going: bolts blowing, then the motor, and then nothing
+  podLaunch() { if (!this.ctx) return; const t = this.now; for (let i = 0; i < 4; i++) this.burst(0.08, 1.1, 'bandpass', 600, 300, 1.5, null, t + i * 0.08, null, 0.001); this.burst(5, 1.0, 'lowpass', 300, 90, 0.7, null, t + 0.4, this.brown, 0.3); this.tone('sawtooth', 70, 30, 4.5, 0.18, null, t + 0.4, 0.2); this.burst(4, 0.35, 'bandpass', 2400, 800, 0.8, null, t + 0.5, null, 0.4); }
   // its neck, cracking round to a new angle: a few dry clicks close together and a little knock under them
   crack(x, z, muffled) { if (!this.ctx) return; const d = this.at(x, z, 2.4, 2.2, muffled), t = this.now, n = 2 + Math.floor(Math.random() * 3); for (let i = 0; i < n; i++) this.burst(0.007, 0.95 - i * 0.12, 'bandpass', 2600 + Math.random() * 1600, 1800, 1.4, d, t + i * (0.018 + Math.random() * 0.022), null, 0.0005); this.tone('sine', 170, 80, 0.06, 0.5, d, t, 0.001); }
   fault(x, z, muffled) { if (!this.ctx) return; const d = this.at(x, z, 2.2, 3.5, muffled), t = this.now; this.tone('square', 58, 58, 0.4, 0.35, d, t, 0.005); for (let i = 0; i < 5; i++) this.burst(0.015, 0.6, 'highpass', 3000, 3000, 0.7, d, t + Math.random() * 0.4, null, 0.001); }

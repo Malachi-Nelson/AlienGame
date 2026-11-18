@@ -11,15 +11,15 @@ export class LocalPlayer {
   constructor(L) {
     this.L = L; this.x = 0; this.z = 0; this.yaw = 0; this.pitch = 0; this.vx = 0; this.vz = 0;
     this.crouch = false; this.eye = P.eye; this.stamina = P.stamina; this.spent = false; this.regenWait = 0;
-    this.light = false; this.scan = false; this.hidden = -1; this.hideYaw = 0; this.rv = -1;
+    this.light = false; this.scan = false; this.hidden = -1; this.hideYaw = 0; this.rv = -1; this.ws = -1;
     this.status = ST.ALIVE; this.mid = -1; this.bob = 0; this.stride = 0; this.moving = false; this.running = false; this.speed = 0;
     this.target = null; this.holdE = 0; this.shake = 0; this.tilt = 0; this.dropT = 0;
     this.hold = false; this.breath = 1; this.gaspT = 0;         // holding your breath in a locker, how much air is left, and how long until you can try again
     this._o = { x: 0, z: 0 };
   }
-  spawn(slot) {
-    const sp = this.L.spawns[slot % this.L.spawns.length];
-    this.x = (sp.cx + 0.5) * T; this.z = (sp.cz + 0.5) * T; this.yaw = -Math.PI / 2; this.pitch = 0; this.vx = this.vz = 0;       // facing into the dock, away from the lift
+  spawn(slot, sec = 0) {
+    const spl = this.L.sections[sec] ? this.L.sections[sec].spawns : this.L.spawns, sp = spl[slot % spl.length];
+    this.x = (sp.cx + 0.5) * T; this.z = (sp.cz + 0.5) * T; this.yaw = -Math.PI / 2; this.pitch = 0; this.vx = this.vz = 0; this.ws = -1;       // facing towards the bow
     this.crouch = false; this.eye = P.eye; this.stamina = P.stamina; this.spent = false; this.light = false; this.scan = false; this.hidden = -1; this.rv = -1; this.status = ST.ALIVE; this.tilt = 0; this.dropT = 0; this.hold = false; this.breath = 1; this.gaspT = 0;
   }
   flags() { return (this.crouch ? F.CROUCH : 0) | (this.light ? F.LIGHT : 0) | (this.running ? F.RUN : 0) | (this.scan ? F.SCAN : 0) | (this.moving ? F.MOVE : 0) | (this.hold ? F.HOLD : 0); }
@@ -116,6 +116,11 @@ export class LocalPlayer {
     const sealed = rep.layout ? rep.layout.sealed : null;
     for (const d of L.doors) {
       if (d.gate) continue;
+      if (d.bulk >= 0) {        // a bulkhead: nobody works it; it says what it is waiting for
+        const next = L.sections[d.bulk + 1].name.toUpperCase(), open = rep.sec === d.bulk && rep.secDone;
+        if (!open) tryIt(d.x, d.z, CFG.reach + 1.4, 0.6, () => ({ kind: 'none', dead: true, text: rep.sec > d.bulk ? 'Bulkhead: sealed behind you' : rep.sec === d.bulk ? `Bulkhead to the ${next}: locked until the job here is done` : 'Bulkhead: locked' }));
+        continue;
+      }
       tryIt(d.x, d.z, CFG.reach + 0.5 + (d.len > 2 ? 0.9 : 0), 0.6, () => sealed && sealed.includes(d.id) ? { kind: 'none', text: 'Sealed shut. Find another way round', dead: true }
         : rep.doorJam[d.id] ? { kind: 'none', text: 'Door forced. It will not move', dead: true } : { kind: 'door', i: d.id, text: rep.doorWant[d.id] ? 'Shut door' : 'Open door' });
     }
@@ -124,18 +129,29 @@ export class LocalPlayer {
       tryIt(k.fx, k.fz, 1.9, 0.6, () => occ ? { kind: 'none', text: 'Someone is in there', dead: true } : { kind: 'hide', i: k.id, text: 'Hide in locker' });
     }
     for (const b of L.breakers) tryIt(b.x, b.z, CFG.reach, 0.5, () => {
-      const z = b.zone, mask = rep.zoneOff | 0, boost = !!(mask & (64 << z)), base = rep.layout ? rep.layout.zones[z] : 2;
+      const z = b.zone, mask = rep.zoneOff | 0, boost = !!(mask & (64 << z)), zn = rep.zonesNow ? rep.zonesNow() : null, base = zn ? zn[z] : 2;
       if (mask & 32) return { kind: 'breaker', i: b.id, text: 'Throw the breaker. It ends the blackout, and it is loud' };
       if (mask & (1 << z)) return { kind: 'breaker', i: b.id, text: 'Reset the breaker. It is loud' };
       if (base !== 2 && !boost) return { kind: 'breaker', i: b.id, text: 'Throw the breaker: power here for a while. It is loud' };
-      return { kind: 'none', text: boost ? 'Breaker: holding, for now' : 'Breaker: this wing has power', dead: true };
+      return { kind: 'none', text: boost ? 'Breaker: holding, for now' : 'Breaker: this deck has power', dead: true };
+    });
+    // the stations: hold use at one to work it
+    const act = rep.layout ? rep.layout.stations : null, pumpsDone = L.stations.every(o => o.kind !== 'pump' || (rep.stProg && rep.stProg[o.id] >= 1));
+    for (const st of L.stations) tryIt(st.x, st.z, CFG.reach + 0.3, 0.45, () => {
+      const p = rep.stProg ? rep.stProg[st.id] : 0, on = !act || act.includes(st.id), mine = st.sec === rep.sec && !rep.secDone;
+      const name = { pump: 'Coolant pump', lever: 'Reactor lever', terminal: 'Terminal', uplink: 'Uplink console' }[st.kind];
+      if (!on) return { kind: 'none', dead: true, text: 'Terminal: nothing on this one' };
+      if (p >= 1) return { kind: 'none', dead: true, text: { pump: 'Coolant pump: running', lever: 'Reactor: running', terminal: 'Terminal: codes downloaded', uplink: 'Uplink: codes accepted' }[st.kind] };
+      if (!mine) return { kind: 'none', dead: true, text: name };
+      if (st.kind === 'lever' && !pumpsDone) return { kind: 'none', dead: true, text: 'Reactor lever: the coolant pumps are not running yet' };
+      return { kind: 'station', i: st.id, hold: true, prog: p, text: { pump: 'Hold to bring the coolant pump back online. It is loud', lever: 'Hold to throw the reactor lever', terminal: 'Hold to download the launch codes. It chirps', uplink: 'Hold to upload the launch codes' }[st.kind] };
     });
     const c = L.lift.console;
     tryIt(c.x, c.z, CFG.reach + 0.6, 0.5, () => {
       const s = rep.lift.state;
-      if (s === LIFT.LOCKED) return { kind: 'none', text: `Quarantine lock: ${rep.tagCount()} of ${CFG.TAGS} tags`, dead: true };
-      if (s === LIFT.READY) return { kind: 'lift', text: 'Call the lift' };
-      return { kind: 'none', text: s === LIFT.CALLED ? 'Lift is on its way' : 'Lift is here', dead: true };
+      if (s === LIFT.LOCKED) return { kind: 'none', text: 'Escape pod: it needs the launch codes uploaded on the bridge', dead: true };
+      if (s === LIFT.READY) return { kind: 'lift', text: 'Prime the escape pod. The alarm will bring it' };
+      return { kind: 'none', text: s === LIFT.CALLED ? 'Escape pod: launch sequence running' : 'Escape pod: hatch open. Get in', dead: true };
     });
     return (this.target = best);
   }

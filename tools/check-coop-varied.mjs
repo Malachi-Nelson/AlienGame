@@ -18,20 +18,19 @@ const pick = () => { const l = __los.session.rep.layout; return JSON.stringify([
 const la = await ev(A, pick), lb = await ev(B, pick);
 ok(la === lb && JSON.parse(la)[0].length >= 3, `both lay the match out the same way (${la})`);
 ok(await ev(B, () => { const l = __los.session.rep.layout; return l.sealed.every(id => __los.s3.doors[id].seal.visible) && __los.s3.doors.filter(r => r.seal && r.seal.visible).length === l.sealed.length; }), 'Bo sees the same doors barred');
-// the leader's world trips the west wing: Bo is standing in it
-const z0 = JSON.parse(la)[1][0];
-if (z0 === 0) console.log('     (the west wing is dead this match: tripping the ring instead)');
-const z = z0 === 0 ? 1 : 0; if (z === 1) await ev(B, () => { const p = __los.player; p.x = 49; p.z = 49; });
+// the leader's world trips a circuit that has power this match
+const z = JSON.parse(la)[1].findIndex((p, i) => i > 0 && p === 2);
+console.log(`     (tripping circuit ${z})`);
 ok(await ev(A, zz => __los.session.world.tripZone(zz, 6), z), 'the leader\'s world trips a circuit');
 ok(await until(B, `__los.session.rep.zoneOff === ${1 << z} && __los.s3.pow[${z}] < 0.15`, 8000), 'Bo sees it go dark');
 ok(await feedHas(B, '/has tripped in the/'), 'and is told'); await B.shot('v-bo-dark');
 ok(await until(B, `__los.session.rep.zoneOff === 0 && __los.s3.pow[${z}] > 0.85`, 12000), 'and sees it come back');
-await ev(A, () => __los.session.world.quake()); ok(await feedHas(B, '/borehole is shifting/'), 'Bo feels the borehole shift');
+await ev(A, () => __los.session.world.quake()); ok(await feedHas(B, '/hull is groaning/'), 'Bo feels the hull shudder');
 await ev(A, () => { __los.session.world.wake = 0; }); ok(await feedHas(B, '/started to move/'), 'Bo hears it wake');
 // it catches Bo
-await ev(B, () => { const p = __los.player; p.x = 27; p.z = 49; p.yaw = Math.PI / 2; p.pitch = 0; p.light = true; window.__minFov = 72; const loop = () => { window.__minFov = Math.min(window.__minFov, __los.cam.fov); requestAnimationFrame(loop); }; loop(); });
+await ev(B, () => { const p = __los.player; p.x = 33; p.z = 33; p.yaw = -Math.PI / 2; p.pitch = 0; p.light = true; window.__minFov = 72; const loop = () => { window.__minFov = Math.min(window.__minFov, __los.cam.fov); requestAnimationFrame(loop); }; loop(); });
 await A.page.waitForTimeout(700);
-await ev(A, () => { const w = __los.session.world, c = w.creature, bo = [...w.players.values()].find(p => p.name === 'Bo'); w.time = Math.max(w.time, 60); c.enter(1); c.path = null; c.pauseT = 0; c.backoff = 0; c.x = 33; c.z = 49; c.yaw = Math.PI / 2; bo.invuln = 0; c.startHunt(bo); });
+await ev(A, () => { const w = __los.session.world, c = w.creature, bo = [...w.players.values()].find(p => p.name === 'Bo'); w.time = Math.max(w.time, 60); c.enter(1); c.path = null; c.pauseT = 0; c.backoff = 0; c.ventCool = 1e9; c.x = 45; c.z = 33; c.yaw = Math.PI / 2; bo.invuln = 0; c.startHunt(bo); });
 ok(await until(B, '__los.session.rep.me.status === 1', 20000), 'the creature brings Bo down');
 ok(await ev(B, () => window.__minFov) < 66, 'and Bo\'s view lurched towards it as it did'); await B.shot('v-bo-caught');
 ok(await feedHas(A, '/Bo is down/'), 'the leader is told');

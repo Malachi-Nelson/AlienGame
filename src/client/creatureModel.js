@@ -29,6 +29,8 @@ const POSE = {
   attack: { hip: 1.0, lean: 0.95, ribs: 1, jaw: 1, arm: [1.4, 0.12, 0.25] },
   locker: { hip: 0.9, lean: 1.02, ribs: 0.3, jaw: 0.6, arm: [1.25, 0.4, 0.5] },        // bent down to the vents in the door
   wait:   { hip: 1.34, lean: 0.12, ribs: 0, jaw: 0, arm: [0.03, 0.04, 0.06] },         // lights out, quite still
+  climb:  { hip: 1.4, lean: -0.2, ribs: 0.2, jaw: 0, arm: [2.95, 0.22, 0.25] },         // reaching up into a hatch
+  land:   { hip: 0.7, lean: 1.2, ribs: 0.5, jaw: 0.4, arm: [0.9, 0.5, 0.7] },           // just dropped out of one
 };
 
 export class CreatureModel {
@@ -142,7 +144,7 @@ export class CreatureModel {
     this.mood = MOOD.calm.slice(); this.t = 0; this.placed = false; this.lunge = 0; this.ambT = 0; this.rear = 0; this.shine = 0;
     this.tilt = 0; this.tiltTo = 0; this.turn = 0; this.turnTo = 0; this.twT = 2; this.tw = 0;
     this.stretch = 0; this.cracks = 0; this.watching = false; this.lol = 1; this.lolSet = false;       // how far its neck has drawn out; how many times its neck has cracked (the page plays them); which way its head hangs while it waits
-    this._a = new THREE.Vector3(); this._b = new THREE.Vector3(); this._k = new THREE.Vector3(); this._f = new THREE.Vector3(); this._s = new THREE.Vector3(); this._q = new THREE.Quaternion(); this._c = new THREE.Color(); this._w = new THREE.Color(1, 1, 0.9);
+    this._a = new THREE.Vector3(); this._b = new THREE.Vector3(); this._fq = new THREE.Vector3(); this._k = new THREE.Vector3(); this._f = new THREE.Vector3(); this._s = new THREE.Vector3(); this._q = new THREE.Quaternion(); this._c = new THREE.Color(); this._w = new THREE.Color(1, 1, 0.9);
     this.setVisible(false);
   }
   setVisible(v) { this.root.visible = v; for (const l of this.legs) { l.up.visible = l.lo.visible = l.kn.visible = l.sp.visible = v; } if (!v) this.placed = false; }
@@ -165,8 +167,9 @@ export class CreatureModel {
     this.stretch += (((st.watch && near < 9 && !hunting) || this.rear > 0.5 ? 1 : 0) - this.stretch) * Math.min(1, dt * (this.rear > 0.5 ? 6 : 1.4));      // slowly, unless it is rearing
     this.lunge = s === CS.ATTACK ? Math.min(1, this.lunge + dt * 7) : Math.max(0, this.lunge - dt * 2.5);
     let want = s === CS.IDLE ? POSE.idle : waiting ? POSE.wait : s === CS.ATTACK ? POSE.attack : s === CS.HUNT ? POSE.hunt : s === CS.LOCKER ? POSE.locker : s === CS.SUSPECT || s === CS.INVEST || s === CS.SEARCH ? POSE.wary : POSE.roam;
+    if (st.climb === 1) want = POSE.climb; else if (st.climb === 2) want = POSE.land;
     if (this.rear > 0.5 && s !== CS.ATTACK) want = POSE.rear;
-    const rate = Math.min(1, dt * (want === POSE.rear || want === POSE.attack ? 13 : want === POSE.idle ? 2 : 5));
+    const rate = Math.min(1, dt * (want === POSE.rear || want === POSE.attack || want === POSE.land ? 13 : want === POSE.idle ? 2 : want === POSE.climb ? 7 : 5));
     p.hip += (want.hip - p.hip) * rate; p.lean += (want.lean - p.lean) * rate; p.ribs += (want.ribs - p.ribs) * Math.min(1, dt * (want.ribs > p.ribs ? 16 : 4)); p.jaw += (want.jaw - p.jaw) * Math.min(1, dt * (want.jaw > p.jaw ? 16 : 4));
     p.a0 += (want.arm[0] - p.a0) * rate; p.a1 += (want.arm[1] - p.a1) * rate; p.a2 += (want.arm[2] - p.a2) * rate;
     // it is too tall for most of the outpost: it stoops as far as the ceiling makes it
@@ -219,7 +222,8 @@ export class CreatureModel {
     this.tw *= Math.max(0, 1 - dt * 8);
     this.tilt += (this.tiltTo - this.tilt) * Math.min(1, dt * 16); this.turn += (this.turnTo - this.turn) * Math.min(1, dt * 20);
     const breathe = Math.sin(this.t * 1.7) * 0.012;
-    this.root.position.set(this.x, 0, this.z); this.root.rotation.y = this.yaw;
+    const up = (st.lift || 0) * 1.8;                   // drawn up into a hatch, or not yet down out of one
+    this.root.position.set(this.x, up, this.z); this.root.rotation.y = this.yaw;
     this.pelvis.position.set(0, hip + breathe, -this.lunge * 0.35); this.pelvis.rotation.set(0, clamp(stride * 0.16, -0.3, 0.3), this.tw * 0.4);
     this.spine.rotation.set(-lean, -clamp(stride * 0.2, -0.35, 0.35), Math.sin(this.t * 2.3) * 0.015 * (1 + sp) + this.tw);
     // head: up out of the stoop so that it faces ahead; turned to whoever it is watching, if anyone
@@ -247,7 +251,8 @@ export class CreatureModel {
     // --- legs: hip, knee, foot. The knee goes wherever the two bones put it, pushed out ahead.
     for (const l of this.legs) {
       const h = this._a.copy(l.hip); this.pelvis.localToWorld(h);
-      const d = this._b.subVectors(l.foot, h), len = clamp(d.length(), 0.25, THIGH + SHIN - 0.01); d.normalize();
+      const ft = up > 0 ? this._fq.copy(l.foot).setY(l.foot.y + up * 0.85) : l.foot;
+      const d = this._b.subVectors(ft, h), len = clamp(d.length(), 0.25, THIGH + SHIN - 0.01); d.normalize();
       const along = (THIGH * THIGH - SHIN * SHIN + len * len) / (2 * len), out = Math.sqrt(Math.max(0, THIGH * THIGH - along * along));
       const f = this._f.set(fx, 0.12, fz).addScaledVector(d, -(fx * d.x + 0.12 * d.y + fz * d.z)).normalize();
       const kn = this._k.copy(h).addScaledVector(d, along).addScaledVector(f, out);

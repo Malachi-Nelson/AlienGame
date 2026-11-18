@@ -12,7 +12,7 @@ for (let seed = 1; seed <= nSeeds; seed++) {
   const w = new World(L, seed * 13), bots = [];
   for (let i = 0; i < nPlayers; i++) { const b = new Bot(w, 'p' + i, 'P' + i); b.mode = 'seek'; b.hideT = 0; b.goal = -1; bots.push(b); }
   w.startMatch(process.env.PLAIN ? -seed * 1009 : seed * 1009);          // PLAIN=1: no sealed doors, all power on, the ordinary creature, for comparison
-  const c = w.creature; let last = -1, stateTime = new Array(10).fill(0), log = [];
+  const c = w.creature; let last = -1, stateTime = new Array(11).fill(0), log = [];
   const nearest = () => Math.min(...bots.filter(b => b.p.status === ST.ALIVE).map(b => Math.hypot(b.x - c.x, b.z - c.z)), 999);
   const t = run(w, bots, 1500, (t, dt) => {
     stateTime[c.state] += dt;
@@ -36,21 +36,32 @@ for (let seed = 1; seed <= nSeeds; seed++) {
       const mate = bots.find(o => o !== b && o.p.status === ST.DOWN);
       if (mate && d > 10) { const md = Math.hypot(mate.p.x - b.x, mate.p.z - b.z); if (md < 2) { b.rv = mate.p.slot; b.path = null; continue; } b.rv = -1; if (b.goal !== -2 || b.arrived) { b.goTo(L.cellOf(mate.p.x, mate.p.z)); b.goal = -2; } continue; }
       b.rv = -1;
-      if (w.lift.state === LIFT.LOCKED) {
-        if (b.goal < 0 || w.tags[b.goal].taken || b.arrived) {
-          if (b.goal >= 0 && !w.tags[b.goal].taken && Math.hypot(w.tags[b.goal].x - b.x, w.tags[b.goal].z - b.z) < 2.5) b.act('T', b.goal);
+      const sc = L.sections[w.sec];
+      if (w.secDone && sc.bulkOut >= 0) { const sp = L.sections[w.sec + 1].spawns[b.p.slot % 6]; if (b.arrived || b.goal !== -3) { b.goToXZ(sp.cx, sp.cz); b.goal = -3; } b.ws = -1; }
+      else if (sc.task === 'tags') {
+        if (b.goal < 0 || !w.tags[b.goal] || w.tags[b.goal].taken || b.arrived) {
+          if (b.goal >= 0 && w.tags[b.goal] && !w.tags[b.goal].taken && Math.hypot(w.tags[b.goal].x - b.x, w.tags[b.goal].z - b.z) < 2.5) b.act('T', b.goal);
           let best = -1, bd = 1e9; w.tags.forEach((tg, i) => { if (tg.taken) return; const dd = Math.hypot(tg.x - b.x, tg.z - b.z) + (bots.some(o => o !== b && o.goal === i) ? 40 : 0); if (dd < bd) { bd = dd; best = i; } });
           if (best >= 0) { b.goal = best; b.goTo(w.tags[best].cell); }
         }
-      } else if (w.lift.state === LIFT.READY) { if (b.arrived) { if (Math.hypot(L.lift.console.x - b.x, L.lift.console.z - b.z) < 4) b.act('L'); else b.goToXZ(10, 22); } }
-      else if (w.lift.state === LIFT.CALLED) { if (b.arrived) b.goToXZ(12 + (b.p.slot % 3), 21 + (b.p.slot % 2) * 7); }
-      else if (w.lift.state === LIFT.ARRIVED) { if (b.arrived && L.cells[L.cellOf(b.x, b.z)] !== C.LIFT) b.goToXZ(6 + b.p.slot % 2, 24 + (b.p.slot >> 1) % 2); }
+      } else if (w.lift.state === LIFT.LOCKED) {           // the stations: walk to the nearest open one and hold use there
+        const st = b.ws >= 0 ? w.stations[b.ws] : null;
+        if (!st || !w.stationOpen(st)) {
+          b.ws = -1; let best = null, bd = 1e9;
+          for (const o of w.stations) { if (!w.stationOpen(o)) continue; const dd = Math.hypot(o.ax - b.x, o.az - b.z) + (bots.some(q => q !== b && q.goalSt === o.id) ? 30 : 0); if (dd < bd) { bd = dd; best = o; } }
+          if (best && (b.goalSt !== best.id || b.arrived)) { b.goalSt = best.id; b.goTo(L.cellOf(best.ax, best.az)); }
+          if (best && Math.hypot(best.ax - b.x, best.az - b.z) < 1.5) b.ws = best.id;
+        }
+      }
+      else if (w.lift.state === LIFT.READY) { if (b.arrived) { if (Math.hypot(L.lift.console.x - b.x, L.lift.console.z - b.z) < 4) b.act('L'); else b.goToXZ(97, 7); } }
+      else if (w.lift.state === LIFT.CALLED) { if (b.arrived) b.goToXZ(94 + (b.p.slot % 3) * 4, 9 + (b.p.slot % 2) * 3); }
+      else if (w.lift.state === LIFT.ARRIVED) { if (b.arrived && L.cells[L.cellOf(b.x, b.z)] !== C.LIFT) b.goToXZ(97 + b.p.slot % 3, 3); }
     }
     return w.phase === PH.PLAY;
   });
   const tot = stateTime.reduce((a, b) => a + b, 0);
   const lay = w.zoneBase.map(z => 'DF.'[z]).join('');
-  summary.push(`seed ${String(seed).padStart(2)} ${w.trait.key.padEnd(8)} power ${lay} sealed ${w.doorSeal.reduce((a, v) => a + v, 0)}: ${w.result ? (w.result.win ? 'ESCAPED' : 'wiped  ') : 'timeout'} at ${t.toFixed(0)}s, tags ${w.tagsTaken}/8, hunts ${c.stats.hunts}, catches ${c.stats.catches}, locker checks ${c.stats.lockerChecks} (found ${c.stats.lockerFinds}), learn hide=${c.learn.hide.toFixed(2)} decoy=${c.learn.decoy.toFixed(2)} | ` + stateTime.map((v, i) => v > 0 ? `${CS_NAME[i]} ${(v / tot * 100).toFixed(0)}%` : '').filter(Boolean).join(' '));
+  summary.push(`seed ${String(seed).padStart(2)} ${w.trait.key.padEnd(8)} power ${lay} sealed ${w.doorSeal.reduce((a, v) => a + v, 0)}: ${w.result ? (w.result.win ? 'ESCAPED' : 'wiped  ') : 'timeout'} at ${t.toFixed(0)}s, reached ${L.sections[w.sec].name.padEnd(12)} vents ${c.stats.vents}, hunts ${c.stats.hunts}, catches ${c.stats.catches}, locker checks ${c.stats.lockerChecks} (found ${c.stats.lockerFinds}), learn hide=${c.learn.hide.toFixed(2)} decoy=${c.learn.decoy.toFixed(2)} | ` + stateTime.map((v, i) => v > 0 ? `${CS_NAME[i]} ${(v / tot * 100).toFixed(0)}%` : '').filter(Boolean).join(' '));
   if (verbose) console.log(`--- seed ${seed}\n` + log.join('\n'));
 }
 console.log(summary.join('\n'));

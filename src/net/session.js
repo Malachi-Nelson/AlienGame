@@ -22,9 +22,17 @@ export class Replica {
     this.doorWant = new Uint8Array(nd); this.doorJam = new Uint8Array(nd); this.doorOpen = new Float32Array(nd);
     this.lift = { state: 0, timer: 0, board: 0 };
     this.decoys = new Map(); this.players = new Map(); this.me = null;
-    this.creature = { has: false, x: 0, z: 0, yaw: 0, state: 0, tgt: -1, lampsOut: false, forcing: false, rear: false, speed: 0, aux: -1 };
+    this.creature = { has: false, x: 0, z: 0, yaw: 0, state: 0, tgt: -1, lampsOut: false, forcing: false, rear: false, vent: false, climb: false, speed: 0, aux: -1 };
     this.cbuf = []; this.lastEv = 0; this.result = null; this.fresh = true; this.snapT = 0; this.ai = [15, 100, 45];
     this.zoneOff = 0;          // circuits that have tripped, one bit each; bit 5 is a blackout
+    this.sec = 0; this.secDone = false; this.stProg = new Float32Array(L.stations.length);      // the section the crew is in, whether its job is done, and how far along each station is (1: done)
+    this._zn = null; this._znKey = '';
+  }
+  // this match's power, circuit by circuit, as it is now: engineering comes on once the reactor is running
+  zonesNow() {
+    if (!this.layout) return null; const on = this.sec > 0 || this.secDone, key = this.seed + ':' + on;
+    if (key !== this._znKey) { this._znKey = key; this._zn = this.layout.zones.slice(); if (on) for (const z of this.L.sections[0].zones) this._zn[z] = 2; }
+    return this._zn;
   }
   tagCount() { let n = 0; for (let i = 0; i < CFG.TAGS; i++) if (this.tagBits & (1 << i)) n++; return n; }
   apply(s, now, myId, hooks) {
@@ -36,6 +44,7 @@ export class Replica {
     this.time = s.t / 10; this.tagBits = s.tg; this.itemBits = s.it; this.result = s.rs || null; this.ai = s.ai;
     for (let d = 0; d < this.doorWant.length; d++) { const ch = s.dr.charCodeAt(d) - 48; this.doorWant[d] = ch ? 1 : 0; this.doorJam[d] = ch === 2 ? 1 : 0; if (this.fresh) this.doorOpen[d] = this.doorWant[d]; }
     this.lift.state = s.lf[0]; this.lift.timer = s.lf[1] / 10; this.lift.board = s.lf[2] / 10; this.zoneOff = s.zo | 0;
+    if (s.sc) { this.sec = s.sc[0] | 0; this.secDone = !!s.sc[1]; for (let i = 0; i < this.stProg.length; i++) { const v = s.sc[2 + i] | 0; this.stProg[i] = v >= 100 ? 1 : v / 100; } }
     this.players.clear();
     for (const id in s.pl) { const a = s.pl[id]; this.players.set(id, { id, slot: a[0], status: a[1], timer: a[2] / 10, ack: a[3], decoys: a[4], aware: a[5] / 100, tags: a[6], revProg: a[7] / 100, hidden: a[8], name: String(a[9]), ready: !!a[10], wind: a[11] | 0 }); }
     this.me = this.players.get(myId) || null;
@@ -56,7 +65,7 @@ export class Replica {
     const t = now - delay; let i = b.length - 1; while (i > 0 && b[i - 1].t > t) i--;
     const hi = b[i], lo = b[Math.max(0, i - 1)], f = hi.t > lo.t ? Math.min(1, Math.max(0, (t - lo.t) / (hi.t - lo.t))) : 1;
     c.x = lerp(lo.x, hi.x, f); c.z = lerp(lo.z, hi.z, f); c.yaw = lerpAngle(lo.yaw, hi.yaw, f);
-    const s = f > 0.5 ? hi : lo; c.state = s.state; c.tgt = s.tgt; c.lampsOut = !!(s.fl & 1); c.forcing = !!(s.fl & 2); c.rear = !!(s.fl & 4); c.speed = s.speed; c.aux = s.aux;
+    const s = f > 0.5 ? hi : lo; c.state = s.state; c.tgt = s.tgt; c.lampsOut = !!(s.fl & 1); c.forcing = !!(s.fl & 2); c.rear = !!(s.fl & 4); c.vent = !!(s.fl & 8); c.climb = !!(s.fl & 16); c.speed = s.speed; c.aux = s.aux;
   }
 }
 
@@ -72,7 +81,7 @@ export class Session {
     this.gid = null; this.epoch = 0; this.hostId = null; this.joinedAt = 0; this.lastSnap = null; this.lastSnapT = 0;
     this.acts = []; this.actSeq = 0; this.ready = false; this.paused = false;
     this.plain = false;            // set for the headless checks: matches with nothing sealed, all power on and no incidents
-    this.local = { x: 0, z: 0, yaw: 0, pitch: 0, f: 0, lk: -1, rv: -1 };
+    this.local = { x: 0, z: 0, yaw: 0, pitch: 0, f: 0, lk: -1, rv: -1, ws: -1 };
     this.acc = 0; this.lastT = performance.now(); this.sendT = 0;
     const hash = (location.hash || '').replace(/^#/, '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12);
     this.private = !!hash; this.code = hash || 'public';
@@ -106,7 +115,7 @@ export class Session {
   start() { if (this.hosting && this.world.phase !== PH.PLAY) this.world.startMatch(this.newSeed()); }
   quit() { this.world = null; this.gid = null; this.hostId = null; this.lastSnap = null; this.paused = false; }
   leave() { const was = this.mode; this.quit(); this.mode = 'menu'; this.rep = new Replica(this.L); if (was !== 'solo' && this.relay) { this.sendT = 0; this.publish(); } }
-  // Ask the host for something: 'T' take tag, 'I' take sounder, 'D' door, 'G' throw, 'L' call the lift. It is repeated until answered.
+  // Ask the host for something: 'T' take tag, 'I' take sounder, 'D' door, 'G' throw, 'B' breaker, 'L' prime the pod. It is repeated until answered.
   act(type, ...args) { this.acts.push([++this.actSeq, type, ...args]); if (this.acts.length > 12) this.acts.shift(); if (this.mode === 'client') this.sendT = 0; }     // ask now, not at the next report
   // The crew in this room that someone could join right now.
   joinable() { let best = null; for (const [gid, g] of this.games) if (g.n < CFG.MAX_PLAYERS && (!best || g.t > best.t)) best = Object.assign({ gid }, g); return best; }
@@ -118,7 +127,7 @@ export class Session {
       if (!this.paused) {
         this.acc += dt; let n = 0;
         while (this.acc >= STEP && n < 6) {
-          this.world.input(this.id, { x: this.local.x, z: this.local.z, yaw: this.local.yaw, pitch: this.local.pitch, f: this.local.f, lk: this.local.lk, rv: this.local.rv, acts: this.acts, name: this.name, rd: true });
+          this.world.input(this.id, { x: this.local.x, z: this.local.z, yaw: this.local.yaw, pitch: this.local.pitch, f: this.local.f, lk: this.local.lk, rv: this.local.rv, ws: this.local.ws, acts: this.acts, name: this.name, rd: true });
           this.world.step(STEP); this.acc -= STEP; n++;
         }
         if (n === 6) this.acc = 0;
@@ -138,7 +147,7 @@ export class Session {
   publish() {
     if (!this.relay || !this.relay.online) return;
     const l = this.local, inGame = this.mode === 'host' || this.mode === 'client';
-    this.relay.pub('p/' + this.id, { n: this.name, g: inGame ? this.gid : null, x: Math.round(l.x * 100), z: Math.round(l.z * 100), y: Math.round(l.yaw * 1000), p: Math.round(l.pitch * 1000), f: l.f, lk: l.lk, rv: l.rv, rd: this.ready ? 1 : 0, a: this.mode === 'client' ? this.acts.slice(0, 8) : [] });
+    this.relay.pub('p/' + this.id, { n: this.name, g: inGame ? this.gid : null, x: Math.round(l.x * 100), z: Math.round(l.z * 100), y: Math.round(l.yaw * 1000), p: Math.round(l.pitch * 1000), f: l.f, lk: l.lk, rv: l.rv, ws: l.ws, rd: this.ready ? 1 : 0, a: this.mode === 'client' ? this.acts.slice(0, 8) : [] });
     if (this.mode === 'host' && this.world) { const s = this.world.snapshot(); s.g = this.gid; s.h = this.id; s.e = this.epoch; this.relay.pub('g/' + this.gid, s); }
   }
 
@@ -157,7 +166,7 @@ export class Session {
         if (d.g === this.gid) {
           if (!this.world.players.has(id) && !this.world.addPlayer(id, d.n)) return;        // full
           const wp = this.world.players.get(id), ack0 = wp.ack;
-          this.world.input(id, { x: d.x / 100, z: d.z / 100, yaw: d.y / 1000, pitch: (d.p || 0) / 1000, f: d.f | 0, lk: d.lk, rv: d.rv, acts: d.a, name: d.n, rd: !!d.rd });
+          this.world.input(id, { x: d.x / 100, z: d.z / 100, yaw: d.y / 1000, pitch: (d.p || 0) / 1000, f: d.f | 0, lk: d.lk, rv: d.rv, ws: d.ws, acts: d.a, name: d.n, rd: !!d.rd });
           if (wp.ack !== ack0) this.sendT = Math.min(this.sendT, 0.02);          // they asked for something: answer straight away
         } else if (this.world.players.has(id)) this.world.removePlayer(id);                  // they went back to the menu
       }

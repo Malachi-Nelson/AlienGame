@@ -9,14 +9,14 @@ let fail = 0; const ok = (c, m) => { console.log((c ? 'ok   ' : 'FAIL ') + m); i
 const feedHas = (re, ms = 9000) => until(`[...document.querySelectorAll('#h-feed div')].some(d => ${re}.test(d.textContent))`, ms);
 
 // a match with something of everything: at least four sealed doors and one dead circuit that is not the west wing
-await ev(() => { const s = __los.session, orig = s.newSeed.bind(s); s.newSeed = () => { for (let seed = 1; ; seed++) { const lay = __los.layoutMatch(__los.L, seed); if (lay.sealed.length >= 4 && lay.zones.includes(0) && lay.zones[0] === 2) return seed; } }; });
+await ev(() => { const s = __los.session, orig = s.newSeed.bind(s); s.newSeed = () => { for (let seed = 1; ; seed++) { const lay = __los.layoutMatch(__los.L, seed); if (lay.sealed.length >= 4 && lay.zones.slice(1).includes(0) && lay.zones.slice(1).includes(2)) return seed; } }; });
 await wait(800); await page.click('#m-solo'); await wait(1200);
 const lay = await ev(() => { const l = __los.session.rep.layout; return { sealed: l.sealed, zones: l.zones, trait: l.trait, plain: l.plain, items: l.items.length, wake: l.wake }; });
 console.log('     this match:', JSON.stringify(lay));
 ok(!lay.plain && lay.sealed.length >= 4, 'a varied match has sealed doors');
 await ev(() => { const w = __los.session.world; w.incT = 1e9; w.wake = 1e9; });               // nothing happens unless this check asks for it
 ok(await feedHas('/sealed shut/', 40000), 'the match opens by saying how many doors are sealed');
-ok(await feedHas('/No power in the/'), 'and which wing has no power'); await g.shot('s-brief');
+ok(await feedHas('/reactor is down/') && await feedHas('/no power on the/'), 'and that the reactor is down, and which deck has no power'); await g.shot('s-brief');
 
 // --- a sealed door
 const door = await ev(id => { const L = __los.L, d = L.doors[id], p = __los.player, side = d.axis === 'x' ? [[0, 1.4], [0, -1.4]] : [[1.4, 0], [-1.4, 0]];
@@ -30,29 +30,29 @@ ok(await ev(() => /Red: sealed doors/.test(document.getElementById('h-mapnote').
 await ev(() => __los.input.hold('map', false));
 
 // --- power
-const deadZ = lay.zones.indexOf(0);
-ok(await ev(z => __los.s3.pow[z] < 0.15 && __los.s3.pow[0] > 0.85, deadZ), 'the dead wing is dark and the dock is lit');
-await ev(() => { const p = __los.player; p.x = 27; p.z = 49; p.yaw = Math.PI / 2; p.light = false; }); await wait(600); await g.shot('s-lit');
-await ev(() => __los.session.world.tripZone(0, 5)); await wait(1300);
-ok(await ev(() => __los.s3.pow[0] < 0.15), 'a tripped circuit goes dark'); await g.shot('s-tripped');
-ok(await feedHas('/tripped in the west wing/'), 'and everyone is told');
-ok(await until('__los.s3.pow[0] > 0.85', 9000), 'it comes back by itself'); ok(await feedHas('/Power is back in the west wing/'), 'and that is announced too');
+const deadZ = lay.zones.findIndex((p, i) => i > 0 && p === 0), onZ = lay.zones.findIndex((p, i) => i > 0 && p === 2), ZN = await ev(() => __los.ZONES);
+ok(await ev(([d, o]) => __los.s3.pow[0] < 0.15 && __los.s3.pow[d] < 0.15 && __los.s3.pow[o] > 0.85, [deadZ, onZ]), 'engineering and the dead deck are dark, and a deck with power is lit');
+await ev(() => { const p = __los.player; p.x = 33; p.z = 33; p.yaw = Math.PI / 2; p.light = false; }); await wait(600); await g.shot('s-dark');
+await ev(z => __los.session.world.tripZone(z, 5), onZ); await wait(1300);
+ok(await ev(z => __los.s3.pow[z] < 0.15, onZ), 'a tripped circuit goes dark');
+ok(await feedHas(`/tripped in the ${ZN[onZ]}/`), 'and everyone is told');
+ok(await until(`__los.s3.pow[${onZ}] > 0.85`, 25000), 'it comes back by itself'); ok(await feedHas(`/Power is back in the ${ZN[onZ]}/`), 'and that is announced too');
 await ev(() => __los.session.world.blackout(3)); await wait(1200);
 ok(await ev(() => Array.from(__los.s3.pow).every(v => v < 0.15)), 'a blackout takes every circuit'); await g.shot('s-blackout');
-ok(await until('Array.from(__los.s3.pow).filter(v => v > 0.85).length >= 3', 9000), 'and ends');
+ok(await until('Array.from(__los.s3.pow).filter(v => v > 0.85).length >= 2', 9000), 'and ends');
 
 // --- the borehole, the doors, the radio
-await ev(() => __los.session.world.quake()); ok(await until('__los.player.shake > 0.2', 4000) && await feedHas('/borehole is shifting/'), 'the borehole shifting shakes the view');
+await ev(() => __los.session.world.quake()); ok(await until('__los.player.shake > 0.2', 4000) && await feedHas('/hull is groaning/'), 'the hull shuddering shakes the view');
 ok(await ev(() => __los.session.world.doorFault(__los.session.world.players.values().next().value) >= 2) && await feedHas('/Door fault/'), 'a door fault moves doors and says so');
 await ev(() => { __los.scares.radioT = 0; }); ok(await feedHas('/^Radio:/'), 'the radio picks something up');
 
 // --- it wakes
 await ev(() => { const w = __los.session.world; w.wake = 0; });
 ok(await feedHas('/started to move/') && await ev(() => __los.session.rep.creature.state !== 0), 'the creature waking is announced');
-await ev(() => { const w = __los.session.world, c = w.creature; c.enter(1); c.path = null; c.pauseT = 1e6; c.x = 121; c.z = 17; });        // parked in the lab, a long way off
+await ev(() => { const w = __los.session.world, c = w.creature; c.enter(1); c.path = null; c.pauseT = 1e6; c.ventCool = 1e9; c.x = 5; c.z = 63; });        // parked at the far end of the lower walkway, out of the way
 
 // --- a figure that is not there
-await ev(() => { const p = __los.player; p.x = 50; p.z = 25.5; p.yaw = -Math.PI / 2; p.pitch = 0; p.light = true; for (let d = 0; d < __los.session.world.doorWant.length; d++) if (!__los.L.doors[d].gate && !__los.session.world.doorSeal[d]) __los.session.world.doorWant[d] = 1; __los.scares.phantomT = 0; });
+await ev(() => { const p = __los.player; p.x = 57; p.z = 33; p.yaw = Math.PI / 2; p.pitch = 0; p.light = true; for (let d = 0; d < __los.session.world.doorWant.length; d++) if (!__los.L.doors[d].gate && !__los.session.world.doorSeal[d]) __los.session.world.doorWant[d] = 1; __los.scares.phantomT = 0; });
 const seenIt = await until('__los.scares.ph !== null && (window.__ph = { x: __los.scares.ph.x, z: __los.scares.ph.z, vis: __los.scares.fig.g.visible })', 15000);
 ok(seenIt, 'a figure appears somewhere ahead'); await g.shot('s-figure');
 if (seenIt) {
@@ -67,9 +67,9 @@ ok(await ev(() => __los.scares.startleT > 50), 'passing a locker can set somethi
 
 // --- caught: the view turns to face it
 await ev(() => {
-  const w = __los.session.world, c = w.creature, p = __los.player; p.x = 27; p.z = 49; p.yaw = Math.PI / 2; p.pitch = 0; p.light = true;      // looking west, its back to the creature
+  const w = __los.session.world, c = w.creature, p = __los.player; p.x = 33; p.z = 33; p.yaw = Math.PI / 2; p.pitch = 0; p.light = true;      // looking west down the spine, its back to the creature
   window.__rec = { fov: 72, err: 9, t0: 0 }; const loop = () => { const cr = __los.session.rep.creature, a = Math.atan2(-(cr.x - p.x), -(cr.z - p.z)); let e = Math.abs(a - p.yaw); if (e > Math.PI) e = 2 * Math.PI - e; if (__los.cam.fov < 71.5) { __rec.fov = Math.min(__rec.fov, __los.cam.fov); __rec.err = Math.min(__rec.err, e); } requestAnimationFrame(loop); }; loop();
-  c.pauseT = 0; c.x = 33; c.z = 49; c.yaw = Math.PI / 2; c.backoff = 0; w.time = Math.max(w.time, 60);
+  c.pauseT = 0; c.x = 45; c.z = 33; c.yaw = Math.PI / 2; c.backoff = 0; c.ventCool = 1e9; w.time = Math.max(w.time, 60);
 });
 await wait(150); await ev(() => { const w = __los.session.world, c = w.creature; c.startHunt(w.players.values().next().value); });
 ok(await until('__los.cam.fov < 70', 12000), 'being caught lurches the view'); await wait(200); await g.shot('s-caught');
@@ -86,7 +86,7 @@ await wait(700); await g.shot('s-locker');
 ok(await until('__los.session.rep.phase === 2', 12000), 'found in a locker with no second wind left, the match is lost');
 ok(await until('!document.querySelector("[data-screen=end]").hidden && !document.getElementById("e-extra").hidden', 8000), 'the end card comes up');
 const extra = await ev(() => document.getElementById('e-extra').textContent); await g.shot('s-end');
-ok(/^What was down thereThe (Prowler|Listener|Watcher|Stalker|Runner|Warden)/.test(extra) && /doors sealed/.test(extra), 'and says which creature it was and what state the outpost was in');
+ok(/^What was aboardThe (Prowler|Listener|Watcher|Stalker|Runner|Warden)/.test(extra) && /doors sealed/.test(extra), 'and says which creature it was and what state the ship was in');
 // --- the setting
 await page.click('#e-leave'); await wait(600);
 await page.uncheck('#s-scare'); ok(await ev(() => __los.settings.scares === false && JSON.parse(localStorage.getItem('los-settings')).scares === false), 'sudden scares can be switched off, and it is remembered');
