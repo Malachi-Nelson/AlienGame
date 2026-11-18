@@ -48,7 +48,7 @@ export class LocalPlayer {
     if (this.status !== ST.ALIVE) { this.eye = approach(this.eye, 0.35, dt * 3); return null; }
 
     // stance
-    if (inp.crouchToggle) this.crouch = !this.crouch;
+    if (inp.crouchHold === true || inp.crouchHold === false) this.crouch = inp.crouchHold; else if (inp.crouchToggle) this.crouch = !this.crouch;
     const low = this.lowRoof(); if (low) this.crouch = true;
     this.eye = approach(this.eye, this.crouch ? P.eyeCrouch : P.eye, dt * 3.6);
 

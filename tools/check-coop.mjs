@@ -26,16 +26,16 @@ const ids = await Promise.all(all.map(g => ev(g, () => __los.session.id)));
 
 // moving: Bo walks, the others see it
 const b0 = await ev(B, () => ({ x: __los.player.x, z: __los.player.z }));
-await ev(B, () => __los.keys.add('KeyW'));
+await ev(B, () => __los.input.hold('fwd', true));
 ok(await until(A, `(() => { const o = []; __los.session.others(performance.now(), o); const b = o.find(p => p.id === '${ids[1]}'); return b && Math.hypot(b.x - ${b0.x}, b.z - ${b0.z}) > 1.5; })()`), 'the leader sees Bo walk');
 ok(await until(Cc, `(() => { const o = []; __los.session.others(performance.now(), o); const b = o.find(p => p.id === '${ids[1]}'); return b && Math.hypot(b.x - ${b0.x}, b.z - ${b0.z}) > 1.5; })()`), 'so does Cy');
-await ev(B, () => __los.keys.delete('KeyW'));
+await ev(B, () => __los.input.hold('fwd', false));
 await ev(Cc, () => { __los.player.yaw = Math.PI; }); await Cc.page.waitForTimeout(600); await Cc.shot('c-crew');
 
 // a tag, taken by a client
 await ev(B, () => { const t = __los.session.rep.layout.tags[3], p = __los.player; p.x = t.x + 1.1; p.z = t.z; p.yaw = Math.PI / 2; });
 ok(await until(B, '__los.player.target && __los.player.target.kind === "tag"'), 'Bo reaches a tag');
-await ev(B, () => __los.pressed.add('KeyE'));
+await ev(B, () => __los.input.press('use'));
 for (const g of all) ok(await until(g, '(__los.session.rep.tagBits & 8) !== 0'), 'the tag is gone for ' + (g === A ? 'the leader' : g === B ? 'Bo' : 'Cy'));
 ok(await ev(B, () => __los.session.rep.me.tags === 1 && __los.session.acts.length === 0), 'and Bo is credited, with nothing left unanswered');
 
@@ -43,7 +43,7 @@ ok(await ev(B, () => __los.session.rep.me.tags === 1 && __los.session.acts.lengt
 await ev(Cc, () => { const p = __los.player; p.x = 34.6; p.z = 49.6; p.yaw = -Math.PI / 2; });
 const dId = await ev(A, () => __los.L.doorAt[__los.L.idx(18, 24)]), w0 = await ev(A, d => __los.session.world.doorWant[d], dId);
 ok(await until(Cc, '__los.player.target && __los.player.target.kind === "door"'), 'Cy reaches the dock door');
-await ev(Cc, () => __los.pressed.add('KeyE'));
+await ev(Cc, () => __los.input.press('use'));
 ok(await until(B, `__los.session.rep.doorWant[${dId}] !== ${w0}`), 'Bo sees the door Cy worked');
 
 // down and back up
@@ -53,9 +53,9 @@ ok(await until(Cc, `[...__los.session.rep.players.values()].some(p => p.id === '
 const bp = await ev(B, () => ({ x: __los.player.x, z: __los.player.z }));
 await ev(Cc, p => { const q = __los.player; q.x = p.x + 1.3; q.z = p.z; q.yaw = Math.PI / 2; }, bp);
 ok(await until(Cc, '__los.player.target && __los.player.target.kind === "revive"'), 'Cy is offered the pick-up');
-await ev(Cc, () => __los.keys.add('KeyE'));
+await ev(Cc, () => __los.input.hold('use', true));
 ok(await until(B, '__los.session.rep.me.status === 0', 60000), 'holding E gets Bo back up');
-await ev(Cc, () => __los.keys.delete('KeyE'));
+await ev(Cc, () => __los.input.hold('use', false));
 await B.shot('c-revived');
 
 // the leader walks out mid-match
@@ -70,7 +70,7 @@ ok(after.tg === before.tg && after.mid === before.mid && after.ph === 1, 'the ma
 ok(await until(K, `__los.session.rep.time > ${before.t} + 3`, 40000), 'and time moves again');
 await ev(K, () => { const t = __los.session.rep.layout.tags[5], p = __los.player; p.x = t.x + 1.1; p.z = t.z; p.yaw = Math.PI / 2; });
 ok(await until(K, '__los.player.target && __los.player.target.kind === "tag"'), 'the follower reaches another tag');
-await ev(K, () => __los.pressed.add('KeyE'));
+await ev(K, () => __los.input.press('use'));
 ok(await until(H, '(__los.session.rep.tagBits & 32) !== 0'), 'and the new leader grants it');
 
 const st = relay.stats(); console.log(`relay carried ${st.count} messages, ${(st.bytes / 1024).toFixed(0)} kB`);

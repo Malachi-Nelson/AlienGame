@@ -24,6 +24,16 @@ There are no image or audio files in this repository.
 | Tab | The outpost schematic |
 | Esc | Free the mouse, pause |
 
+Those are the keys it starts with. **Controls**, on the title card and the pause card, lets you change every one of
+them, give an action a second key or a mouse button, turn the view upside down, and switch crouch to hold.
+
+### On a phone or tablet
+
+Open the same link and turn the phone sideways. The left thumb moves, the right thumb looks, and the buttons do the
+rest: USE, RUN, CROUCH, THROW, LAMP, SCAN (tap on, tap off) and MAP (hold). **Controls → Move and resize the touch buttons** lets
+you drag each button where you want it, resize them, fade them, swap the sides and change how fast the view turns.
+If the touch buttons do not come up by themselves, Controls has an On switch for them.
+
 Find the eight tags, go back to the Dock, call the lift, survive until it arrives, and get on.
 
 Things worth knowing:
@@ -79,13 +89,14 @@ npm run map              # prints the outpost as text and checks it
 node tools/soak.mjs 3 6  # plays six whole matches with three stand-in players and prints what the creature did
 ```
 
-Two checks drive the built page in a headless browser. They need Playwright, Chrome and a local stand-in for the
+A few checks drive the built page in a headless browser. They need Playwright, Chrome and a local stand-in for the
 relays, none of which are in `package.json`:
 
 ```sh
 npm i --no-save playwright-core aedes ws
 node tools/check-solo.mjs     # one player: walking, doors, a tag, a locker, meeting the creature, the lift
 node tools/check-coop.mjs     # three players: lobby, a match, going down, the leader leaving mid-match
+node tools/check-touch.mjs    # a phone-sized touch screen: the stick, the buttons, arranging them; and rebinding keys
 node tools/check-audio.mjs    # renders every sound offline and prints how loud each one comes out
 ```
 
@@ -104,7 +115,8 @@ src/level.js          the outpost: every room, door, locker, duct and light, as 
 src/nav.js            sight lines, path finding, collision
 src/sim/              the match as the host runs it: world.js (rules), creature.js (the AI)
 src/net/              relay.js (the public relays), session.js (host, client, taking over as host)
-src/client/           what you see and hear: scene, creature model, other players, sound, HUD, the local player
+src/client/           what you see and hear: scene, creature model, other players, sound, HUD, the local player,
+                      controls.js (actions and key bindings), touch.js (the phone controls)
 src/main.js           ties it together
 test/                 node:test suites
 tools/                build, map printer, soak, headless checks

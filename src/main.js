@@ -12,6 +12,8 @@ import { Sound } from './client/audio.js';
 import { LocalPlayer } from './client/player.js';
 import { Hud } from './client/hud.js';
 import { Session } from './net/session.js';
+import { Input, ACTIONS } from './client/controls.js';
+import { Touch } from './client/touch.js';
 import { clamp, clamp01, wrapAngle, yawOf } from './util.js';
 
 const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
@@ -19,14 +21,24 @@ const query = new URLSearchParams(location.search);
 const NOLOCK = query.has('nolock');                 // for automated checks: play without capturing the mouse
 
 // ---------------------------------------------------------------------------------------------- settings
-const settings = { name: '', sens: 1, vol: 0.8, bri: 1, q: 'high', auto: true };
-try { Object.assign(settings, JSON.parse(localStorage.getItem('los-settings') || '{}')); } catch (e) { /* private browsing: defaults */ }
+const settings = { name: '', sens: 1, vol: 0.8, bri: 1, q: 'high', auto: true, touchMode: 'auto', invertY: false, holdCrouch: false };
+let stored = null; try { stored = localStorage.getItem('los-settings'); } catch (e) { /* private browsing: defaults */ }
+try { Object.assign(settings, JSON.parse(stored || '{}')); } catch (e) { /* unreadable: defaults */ }
 const save = () => { try { localStorage.setItem('los-settings', JSON.stringify(settings)); } catch (e) { /* not kept, that is all */ } };
 if (query.get('q')) { settings.q = query.get('q'); settings.auto = false; }
+const input = new Input(settings);
+const canvas = document.getElementById('view');
+// Touch controls come on by themselves where a finger is the main pointer (phones, tablets), or where the mouse cannot be
+// captured at all. The Controls screen can force them on or off.
+const mq = q => !!(window.matchMedia && window.matchMedia(q).matches);
+const coarse = () => (window.matchMedia ? mq('(pointer: coarse)') : 'ontouchstart' in window);
+const noMouseLock = !canvas.requestPointerLock;
+let autoTouch = false, lastPointer = '';
+const touchOn = () => query.has('touch') || settings.touchMode === 'on' || (settings.touchMode === 'auto' && (coarse() || noMouseLock || autoTouch));
+if (!stored && touchOn() && !query.get('q')) settings.q = 'medium';      // a phone starts one step down; it drops further by itself if that is still too much
 
 // ---------------------------------------------------------------------------------------------- the pieces
 const L = buildLevel();
-const canvas = document.getElementById('view');
 const gfx = new Gfx(canvas); gfx.setQuality(settings.q);
 const s3 = new Scene3D(L);
 const creature = new CreatureModel(s3);
@@ -37,6 +49,7 @@ const cam = new THREE.PerspectiveCamera(72, 1, 0.06, 95); cam.rotation.order = '
 const lamp = new THREE.SpotLight(0xdfeaff, 0, 38, 0.5, 0.6, 1.6);
 lamp.shadow.mapSize.set(1024, 1024); lamp.shadow.camera.near = 0.25; lamp.shadow.camera.far = 38; lamp.shadow.bias = -0.002; lamp.shadow.normalBias = 0.03;
 s3.scene.add(lamp); s3.scene.add(lamp.target);
+gfx.renderer.shadowMap.autoUpdate = false;        // the lamp's shadows are redrawn only on frames when the lamp is lit (see frame)
 const applyQuality = () => { gfx.setQuality(settings.q); lamp.castShadow = gfx.q.shadow > 0; if (gfx.q.shadow) { lamp.shadow.mapSize.set(gfx.q.shadow, gfx.q.shadow); if (lamp.shadow.map) { lamp.shadow.map.dispose(); lamp.shadow.map = null; } } };
 applyQuality();
 
@@ -58,9 +71,31 @@ const session = new Session(L, {
 });
 session.name = settings.name || 'Crew';
 
-const lock = () => { sound.start(); wantPause = false; if (!NOLOCK && document.pointerLockElement !== canvas && canvas.requestPointerLock) { try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* the browser will ask again on the next click */ } } };
-const unlock = () => { if (document.pointerLockElement === canvas) document.exitPointerLock(); };
-function leave() { session.leave(); player.mid = -1; avatars.clear(); creature.setVisible(false); unlock(); wantPause = false; }
+// keep a phone's screen on while a match is running: hiding in a locker means not touching it for a while
+let wake = null;
+async function keepAwake(on) {
+  try {
+    if (on && !wake && navigator.wakeLock && document.visibilityState === 'visible') { wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', () => { wake = null; }); }
+    else if (!on && wake) { const w = wake; wake = null; await w.release(); }
+  } catch (e) { wake = null; }
+}
+const buzz = pattern => { if (TOUCH && navigator.vibrate) { try { navigator.vibrate(pattern); } catch (e) { /* not allowed here */ } } };
+// the mouse could not be captured. If that followed a tap, this is a touch device that did not say so: bring up the touch controls.
+function lockFailed() {
+  if (lastPointer !== 'touch' || settings.touchMode !== 'auto' || TOUCH) return;
+  autoTouch = true; applyTouch(); wantPause = false; hud.notice('Touch controls turned on. Controls has the setting.');
+}
+const lock = () => {
+  sound.cheap = TOUCH; sound.start(); wantPause = false; input.clear();
+  if (TOUCH) {          // phones: full screen and sideways where the browser allows it; there is no mouse to capture
+    const el = document.documentElement; keepAwake(true);
+    try { if (!document.fullscreenElement && el.requestFullscreen) { const p = el.requestFullscreen({ navigationUI: 'hide' }); if (p && p.then) p.then(() => { try { const o = screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape'); if (o && o.catch) o.catch(() => {}); } catch (e) { /* not offered here */ } }, () => {}); } } catch (e) { /* not offered here */ }
+    return;
+  }
+  if (!NOLOCK && document.pointerLockElement !== canvas && canvas.requestPointerLock) { try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(lockFailed); } catch (e) { lockFailed(); } }
+};
+const unlock = () => { if (document.pointerLockElement === canvas) document.exitPointerLock(); input.clear(); };
+function leave() { session.leave(); player.mid = -1; avatars.clear(); creature.setVisible(false); unlock(); wantPause = false; keepAwake(false); }
 
 const hud = new Hud(L, {
   solo: () => { session.name = settings.name || 'Crew'; session.solo(); lock(); },
@@ -73,6 +108,13 @@ const hud = new Hud(L, {
   again: () => { if (session.mode === 'solo') { session.solo(); lock(); } },
   name: v => { settings.name = v.trim().slice(0, 14); session.name = settings.name || 'Crew'; save(); },
   setting: (k, v) => { settings[k] = v; if (k === 'q') settings.auto = false; save(); hud.setSettings(settings); if (k === 'vol') sound.setVolume(v); if (k === 'q') applyQuality(); },
+  controls: () => { controlsOpen = true; showControls(); },
+  controlsBack: () => { controlsOpen = false; input.listen = null; save(); },
+  bind: (a, slot) => { input.listen = [a, slot]; showControls(); },
+  resetBinds: () => { input.reset(); save(); showControls(); },
+  touchMode: v => { settings.touchMode = v; autoTouch = false; save(); applyTouch(); showControls(); },
+  option: (k, v) => { settings[k] = !!v; save(); showControls(); },
+  editTouch: () => { controlsOpen = false; touch.edit(true); },
   privateRoom: () => { if (session.private) location.hash = ''; else location.hash = Math.random().toString(36).slice(2, 8); },
 });
 hud.setSettings(settings); hud.setBuild('Build ' + BUILD + '.');
@@ -81,21 +123,53 @@ window.addEventListener('hashchange', () => location.reload());
 session.connect();
 
 // ---------------------------------------------------------------------------------------------- input
-const keys = new Set(), pressed = new Set(); let mdx = 0, mdy = 0, locked = NOLOCK;
-const typing = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'SELECT'); };
+let mdx = 0, mdy = 0, locked = NOLOCK, controlsOpen = false, TOUCH = false, swallowClick = false;
+const typing = () => { const a = document.activeElement; return a && ((a.tagName === 'INPUT' && a.type !== 'checkbox' && a.type !== 'range') || a.tagName === 'SELECT'); };
+const inMatch = () => session.mode !== 'menu' && session.rep.phase === PH.PLAY;
 document.addEventListener('keydown', e => {
+  if (input.listen) { e.preventDefault(); input.codeDown(e.code); return; }
   if (typing()) return;
-  if (e.code === 'Tab' || e.code === 'Space' || (locked && e.code.startsWith('Arrow'))) e.preventDefault();
-  if (e.repeat) return; keys.add(e.code); pressed.add(e.code);
+  if (e.repeat) { if (input.isBound(e.code) && (locked || inMatch())) e.preventDefault(); return; }
+  const used = input.codeDown(e.code);
+  if (used && (locked || inMatch() || e.code === 'Tab')) e.preventDefault();
 });
-document.addEventListener('keyup', e => keys.delete(e.code));
-window.addEventListener('blur', () => keys.clear());
+document.addEventListener('keyup', e => input.codeUp(e.code));
+window.addEventListener('blur', () => input.clear());
 document.addEventListener('mousemove', e => { if (document.pointerLockElement === canvas) { mdx += clamp(e.movementX || 0, -160, 160); mdy += clamp(e.movementY || 0, -160, 160); } });
-document.addEventListener('mousedown', e => { if (document.pointerLockElement !== canvas) return; if (e.button === 0) pressed.add('Mouse0'); if (e.button === 2) keys.add('Mouse2'); });
-document.addEventListener('mouseup', e => { if (e.button === 2) keys.delete('Mouse2'); });
+document.addEventListener('pointerdown', e => { lastPointer = e.pointerType || ''; }, true);
+document.addEventListener('mousedown', e => {
+  if (input.listen) {       // waiting for a new binding: any mouse button counts, except a click on another binding's own button
+    if (e.target.closest && e.target.closest('[data-bind]')) return;
+    e.preventDefault(); input.codeDown('Mouse' + e.button); swallowClick = true; setTimeout(() => { swallowClick = false; }, 400); return;
+  }
+  if (document.pointerLockElement === canvas) input.codeDown('Mouse' + e.button);
+});
+document.addEventListener('click', e => { if (swallowClick) { swallowClick = false; e.stopPropagation(); e.preventDefault(); } }, true);     // the click that set a binding must not also press what was under it
+document.addEventListener('mouseup', e => input.codeUp('Mouse' + e.button));
 document.addEventListener('contextmenu', e => e.preventDefault());
-document.addEventListener('pointerlockchange', () => { locked = NOLOCK || document.pointerLockElement === canvas; if (!locked && session.mode !== 'menu' && session.rep.phase === PH.PLAY) wantPause = true; keys.clear(); });
-canvas.addEventListener('click', () => { if (session.mode !== 'menu' && session.rep.phase === PH.PLAY && !locked) lock(); });
+document.addEventListener('gesturestart', e => e.preventDefault());       // iOS pinch
+document.addEventListener('pointerlockchange', () => { if (TOUCH) return; locked = NOLOCK || document.pointerLockElement === canvas; if (!locked && inMatch()) wantPause = true; input.clear(); });
+document.addEventListener('pointerlockerror', () => lockFailed());
+canvas.addEventListener('click', () => { if (!TOUCH && inMatch() && !locked) lock(); });
+document.addEventListener('visibilitychange', () => {
+  if (!TOUCH) return;
+  if (document.hidden) { if (inMatch()) { wantPause = true; input.clear(); touch.release(); } }      // the phone was locked or another app came up
+  else if (inMatch()) keepAwake(true);
+});
+
+const touch = new Touch(input, settings, {
+  pause: () => { wantPause = true; input.clear(); },
+  edited: () => save(),
+  editDone: () => { controlsOpen = true; showControls(); },
+});
+function applyTouch() {
+  const was = TOUCH; TOUCH = touchOn(); touch.setEnabled(TOUCH); hud.setTouch(TOUCH, input); sound.cheap = TOUCH;
+  if (was && !TOUCH) { locked = NOLOCK || document.pointerLockElement === canvas; if (!locked && inMatch()) wantPause = true; input.clear(); }
+}
+input.onBound = () => { save(); showControls(); };
+function showControls() { hud.setControls(input, ACTIONS, settings, TOUCH); }
+applyTouch();
+if (window.matchMedia) { try { window.matchMedia('(pointer: coarse)').addEventListener('change', () => applyTouch()); } catch (e) { /* older browsers: the Controls screen still has the switch */ } }
 
 // ---------------------------------------------------------------------------------------------- what the host reports
 function nameOf(slot) { for (const p of session.rep.players.values()) if (p.slot === slot) return p.name; return 'Someone'; }
@@ -112,11 +186,11 @@ function onEvent(e) {
     case 'door': { const d = L.doors[e[2]]; if (d) sound.door(d.x, d.z, !!e[3], !!e[4], muffled(d.x, d.z)); break; }
     case 'throw': if (mine) sound.throwSound(); break;
     case 'alert': if (cr.has) sound.voice('alert', cr.x, cr.z, crMuffled); break;
-    case 'spot': if (cr.has) sound.voice('screech', cr.x, cr.z, crMuffled); if (mine) { hud.banner('It has seen you', 2.5, 'bad'); player.shake = 0.6; } break;
+    case 'spot': if (cr.has) sound.voice('screech', cr.x, cr.z, crMuffled); if (mine) { hud.banner('It has seen you', 2.5, 'bad'); player.shake = 0.6; buzz([70, 50, 140]); } break;
     case 'lost': if (cr.has) sound.voice('hiss', cr.x, cr.z, crMuffled); break;
     case 'lunge': if (cr.has) sound.voice('lunge', cr.x, cr.z, crMuffled); break;
     case 'lockchk': { const k = L.lockers[e[2]]; if (k) sound.locker(k.x, k.z, true, muffled(k.x, k.z)); if (e[3] && me && me.hidden === e[2]) player.shake = 1.4; break; }
-    case 'down': if (mine) { sound.downed(); player.shake = 1.4; } else hud.feed(`${nameOf(e[2])} is down`); break;
+    case 'down': if (mine) { sound.downed(); player.shake = 1.4; buzz(350); } else hud.feed(`${nameOf(e[2])} is down`); break;
     case 'dead': if (!mine) hud.feed(`${nameOf(e[2])} is gone`); break;
     case 'rev': if (mine) { sound.revived(); hud.banner('Back on your feet', 3); } else hud.feed(`${nameOf(e[3])} picked up ${nameOf(e[2])}`); break;
     case 'wind': if (mine) { sound.revived(); hud.banner('It left you for dead. You will not survive another.', 6, 'warn'); } break;
@@ -147,10 +221,12 @@ function frame() {
   requestAnimationFrame(frame);
   const now = performance.now(), raw = (now - last) / 1000, dt = clamp(raw, 0, 0.1); last = now;
   let rep = session.rep; const inGame = session.mode !== 'menu';
+  const upright = TOUCH && window.innerHeight > window.innerWidth;       // a phone held the tall way: the game waits for it to be turned
+  if (TOUCH) locked = !wantPause && !touch.editing && !controlsOpen;
   // if this machine cannot keep up, turn the detail down rather than leave the player with a slideshow
-  if (settings.auto && inGame && rep.phase === PH.PLAY && document.pointerLockElement === canvas && !document.hidden && raw < 0.25) {      // only while someone is really playing: a background tab is slow for other reasons
+  if (settings.auto && inGame && rep.phase === PH.PLAY && (document.pointerLockElement === canvas || TOUCH) && !document.hidden && raw < 0.25) {      // only while someone is really playing: a background tab is slow for other reasons
     slowAcc += raw; slowN++;
-    if (slowAcc > 5) { if (slowAcc / slowN > 0.031 && settings.q !== 'low') { settings.q = settings.q === 'high' ? 'medium' : 'low'; applyQuality(); hud.setSettings(settings); save(); hud.notice('Detail turned down to keep things smooth. Esc has the setting.'); } slowAcc = 0; slowN = 0; }
+    if (slowAcc > 5) { if (slowAcc / slowN > 0.031 && settings.q !== 'low') { settings.q = settings.q === 'high' ? 'medium' : 'low'; applyQuality(); hud.setSettings(settings); save(); hud.notice(TOUCH ? 'Detail turned down to keep things smooth. Pause has the setting.' : 'Detail turned down to keep things smooth. Esc has the setting.'); } slowAcc = 0; slowN = 0; }
   }
   const playing = inGame && rep.phase === PH.PLAY && !!rep.me;
   const active = playing && locked && !session.paused;
@@ -163,9 +239,10 @@ function frame() {
     player.status = me.status;
     const inp = { fwd: 0, right: 0, run: false, crouchToggle: false, dx: 0, dy: 0 };
     if (active) {
-      inp.fwd = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
-      inp.right = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
-      inp.run = keys.has('ShiftLeft') || keys.has('ShiftRight'); inp.crouchToggle = pressed.has('KeyC'); inp.dx = mdx; inp.dy = mdy;
+      inp.fwd = (input.held('fwd') ? 1 : 0) - (input.held('back') ? 1 : 0) + input.move.y;
+      inp.right = (input.held('right') ? 1 : 0) - (input.held('left') ? 1 : 0) + input.move.x;
+      inp.run = input.held('run') || touch.running; inp.crouchToggle = input.hit('crouch'); inp.crouchHold = settings.holdCrouch && !TOUCH ? input.held('crouch') : null;
+      inp.dx = mdx + input.look.x; inp.dy = (mdy + input.look.y) * (settings.invertY ? -1 : 1);
     }
     const step = player.update(dt, inp, rep, 0.0022 * settings.sens);
     if (step) sound.step(step);
@@ -174,25 +251,26 @@ function frame() {
     const alive = me.status === ST.ALIVE; player.rv = -1;
     if (active && alive) {
       const tg = player.target;
-      if (pressed.has('KeyE') && tg && !tg.dead) {
+      if (input.hit('use') && tg && !tg.dead) {
         if (tg.kind === 'tag') session.act('T', tg.i); else if (tg.kind === 'item') session.act('I', tg.i); else if (tg.kind === 'door') session.act('D', tg.i); else if (tg.kind === 'lift') session.act('L');
         else if (tg.kind === 'hide') { player.enterLocker(tg.i); sound.locker(L.lockers[tg.i].x, L.lockers[tg.i].z, false, false); ejectT = 0; }
         else if (tg.kind === 'unhide') { const k = L.lockers[player.hidden]; player.leaveLocker(); if (k) sound.locker(k.x, k.z, false, false); }
       }
-      if (keys.has('KeyE') && tg && tg.kind === 'revive') player.rv = tg.slot;
+      if (input.held('use') && tg && tg.kind === 'revive') player.rv = tg.slot;
       if (player.hidden < 0) {
-        if (pressed.has('KeyF')) { player.light = !player.light; sound.lamp(player.light); }
-        if ((pressed.has('KeyG') || pressed.has('Mouse0')) && me.decoys > 0) session.act('G', Math.round(player.yaw * 1000), Math.round(player.pitch * 1000));
-        player.scan = keys.has('KeyQ') || keys.has('Mouse2');
+        if (input.hit('lamp')) { player.light = !player.light; sound.lamp(player.light); }
+        if (input.hit('throw') && me.decoys > 0) session.act('G', Math.round(player.yaw * 1000), Math.round(player.pitch * 1000));
+        player.scan = input.held('scan');
       } else player.scan = false;
     } else if (!alive) player.scan = false;
+    if (TOUCH && (!alive || player.hidden >= 0)) touch.setToggle('scan', false);
     // two people went for the same locker: the host says who got it
     if (player.hidden >= 0 && me.hidden !== player.hidden) { ejectT += dt; if (ejectT > 1 && others.some(o => o.hidden === player.hidden)) { player.leaveLocker(); hud.feed('Someone is already in there'); } } else ejectT = 0;
     session.local.x = player.x; session.local.z = player.z; session.local.yaw = player.yaw; session.local.pitch = player.pitch; session.local.f = player.flags(); session.local.lk = player.hidden; session.local.rv = player.rv;
-    if ((me.status === ST.DEAD || me.status === ST.OUT) && pressed.has('Mouse0')) cycle = true;          // click: watch someone else
+    if ((me.status === ST.DEAD || me.status === ST.OUT) && (input.hit('throw') || input.hit('use'))) cycle = true;          // click: watch someone else
     matchT += dt;
   } else { session.others(now, others); player.scan = false; }
-  if (session.mode === 'solo') session.paused = wantPause && !locked;
+  if (session.mode === 'solo') session.paused = (wantPause && !locked) || (upright && playing);
   mdx = mdy = 0;
 
   // --- the match itself
@@ -230,6 +308,7 @@ function frame() {
   }
   lampGain += (clamp(aheadD / 8, 0.1, 1) - lampGain) * Math.min(1, dt * 7);
   lamp.intensity += ((lampOn ? 200 * lampGain : 0) - lamp.intensity) * Math.min(1, dt * 22);
+  gfx.renderer.shadowMap.needsUpdate = lamp.castShadow && lamp.intensity > 1;
   lamp.position.set(cam.position.x + Math.cos(camYaw) * 0.2, cam.position.y - 0.16, cam.position.z - Math.sin(camYaw) * 0.2);
   lamp.target.position.set(cam.position.x + fx * 10, cam.position.y + fy * 10, cam.position.z + fz * 10);
   sound.listener(cam.position.x, cam.position.y, cam.position.z, fx, fy, fz);
@@ -275,9 +354,9 @@ function frame() {
   }
   const lf = rep.lift; let objective = '';
   if (playing) {
-    if (me.status === ST.DEAD) objective = watching ? `You are gone. Watching ${watching.name}. Click to switch.` : 'You are gone.';
+    if (me.status === ST.DEAD) objective = watching ? `You are gone. Watching ${watching.name}. ${TOUCH ? 'Tap USE' : 'Press ' + input.label('use')} to switch.` : 'You are gone.';
     else if (me.status === ST.OUT) objective = 'You are out.';
-    else if (lf.state === LIFT.LOCKED) objective = 'Find the crew tags. Hold Q for the scanner.';
+    else if (lf.state === LIFT.LOCKED) objective = TOUCH ? 'Find the crew tags. SCAN points to the nearest.' : `Find the crew tags. Hold ${input.label('scan')} for the scanner.`;
     else if (lf.state === LIFT.READY) objective = 'Every tag is in. Call the lift from the panel in the Dock.';
     else if (lf.state === LIFT.CALLED) objective = `Lift arrives in ${Math.ceil(lf.timer)} s. Stay alive.`;
     else if (lf.state === LIFT.ARRIVED) objective = `Get on the lift. It leaves in ${Math.max(0, Math.ceil(lf.board))} s.`;
@@ -297,16 +376,21 @@ function frame() {
     show: playing && rep.phase === PH.PLAY, tags: rep.tagCount(), objective, bars, roster, room: playing ? L.roomName(cam.position.x, cam.position.z) : '',
     prompt: tg, hold: revT ? revT.revProg : 0, hidden: playing && player.hidden >= 0, seen: playing && me ? me.aware : 0,
     stamina: player.stamina / CFG.player.stamina, spent: player.spent, lamp: player.light, crouch: player.crouch, sounders: me ? me.decoys : 0,
-    scan, marks, map: playing && (keys.has('Tab') || keys.has('KeyM')), mapPlayers,
+    scan, marks, map: playing && input.held('map') && !upright, mapPlayers,
     down: down ? { title: 'Down', text: session.mode === 'solo' ? (me.wind ? 'Hold still.' : 'That was your second wind.') : (me.revProg > 0 ? 'Someone is picking you up' : 'A crewmate can pick you up'), frac: me.revProg > 0 ? me.revProg : me.timer / CFG.down.bleed } : null,
   });
 
   // --- menus
   let screen = null;
-  if (!inGame) screen = 'title';
+  if (touch.editing) screen = null;
+  else if (controlsOpen) screen = 'controls';
+  else if (!inGame) screen = 'title';
   else if (rep.phase === PH.LOBBY) { screen = 'lobby'; if (locked && !NOLOCK) unlock(); }
   else if (rep.phase === PH.END) screen = 'end';
   else if (!locked) screen = wantPause ? 'pause' : 'click';
+  touch.show(touch.editing || (TOUCH && screen === null && playing));
+  if (TOUCH) touch.setLive(playing && player.target && !player.target.dead);
+  hud.portrait(upright && (touch.editing || (screen === null && playing)));
   if (screen !== hud.screen) { hud.setScreen(screen); if (screen === 'pause') hud.setPause(session.mode === 'solo'); if (screen === 'end' && !endShown) showEnd(); }
   if (screen === 'lobby') { const list = [...rep.players.values()].sort((a, b) => a.slot - b.slot).map(p => ({ id: p.id, slot: p.slot, name: p.name, ready: p.ready, host: p.id === session.hostId })); hud.setLobby(list, session.id, session.mode === 'host', session.ready); }
   netT -= dt;
@@ -325,7 +409,7 @@ function frame() {
   u.uFade.value = showWorld ? fade * (me && me.status === ST.DEAD && !watching ? 0.3 : 1) : 0.55;
   u.uDesat.value = watching ? 0.55 : 0; u.uSlats.value += (((playing && player.hidden >= 0 && !watching) ? 1 : 0) - u.uSlats.value) * Math.min(1, dt * 9);
   gfx.render(s3.scene, cam);
-  pressed.clear();
+  input.endFrame();
 }
 
 // A hidden tab stops drawing, but a host must keep the match running for everyone else: a worker's timer is not slowed down.
@@ -334,5 +418,5 @@ try {
   w.onmessage = () => { if (session.mode !== 'menu' && (document.hidden || performance.now() - session.lastT > 90)) session.tick(performance.now()); };     // also covers a visible page whose drawing has been slowed right down
 } catch (e) { /* no workers: the match pauses while the host's tab is hidden */ }
 
-window.__los = { session, player, hud, gfx, sound, Sound, L, cam, settings, keys, pressed, build: BUILD };
+window.__los = { session, player, hud, gfx, sound, Sound, L, cam, settings, input, touch, build: BUILD };
 requestAnimationFrame(frame);
