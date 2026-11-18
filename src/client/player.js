@@ -14,14 +14,15 @@ export class LocalPlayer {
     this.light = false; this.scan = false; this.hidden = -1; this.hideYaw = 0; this.rv = -1;
     this.status = ST.ALIVE; this.mid = -1; this.bob = 0; this.stride = 0; this.moving = false; this.running = false; this.speed = 0;
     this.target = null; this.holdE = 0; this.shake = 0; this.tilt = 0; this.dropT = 0;
+    this.hold = false; this.breath = 1; this.gaspT = 0;         // holding your breath in a locker, how much air is left, and how long until you can try again
     this._o = { x: 0, z: 0 };
   }
   spawn(slot) {
     const sp = this.L.spawns[slot % this.L.spawns.length];
     this.x = (sp.cx + 0.5) * T; this.z = (sp.cz + 0.5) * T; this.yaw = -Math.PI / 2; this.pitch = 0; this.vx = this.vz = 0;       // facing into the dock, away from the lift
-    this.crouch = false; this.eye = P.eye; this.stamina = P.stamina; this.spent = false; this.light = false; this.scan = false; this.hidden = -1; this.rv = -1; this.status = ST.ALIVE; this.tilt = 0; this.dropT = 0;
+    this.crouch = false; this.eye = P.eye; this.stamina = P.stamina; this.spent = false; this.light = false; this.scan = false; this.hidden = -1; this.rv = -1; this.status = ST.ALIVE; this.tilt = 0; this.dropT = 0; this.hold = false; this.breath = 1; this.gaspT = 0;
   }
-  flags() { return (this.crouch ? F.CROUCH : 0) | (this.light ? F.LIGHT : 0) | (this.running ? F.RUN : 0) | (this.scan ? F.SCAN : 0) | (this.moving ? F.MOVE : 0); }
+  flags() { return (this.crouch ? F.CROUCH : 0) | (this.light ? F.LIGHT : 0) | (this.running ? F.RUN : 0) | (this.scan ? F.SCAN : 0) | (this.moving ? F.MOVE : 0) | (this.hold ? F.HOLD : 0); }
   inDuct() { return this.L.cells[this.L.cellOf(this.x, this.z)] === C.DUCT; }
   // is there headroom to stand here?
   lowRoof() {
@@ -122,6 +123,13 @@ export class LocalPlayer {
       const occ = others.some(o => o.hidden === k.id);
       tryIt(k.fx, k.fz, 1.9, 0.6, () => occ ? { kind: 'none', text: 'Someone is in there', dead: true } : { kind: 'hide', i: k.id, text: 'Hide in locker' });
     }
+    for (const b of L.breakers) tryIt(b.x, b.z, CFG.reach, 0.5, () => {
+      const z = b.zone, mask = rep.zoneOff | 0, boost = !!(mask & (64 << z)), base = rep.layout ? rep.layout.zones[z] : 2;
+      if (mask & 32) return { kind: 'breaker', i: b.id, text: 'Throw the breaker. It ends the blackout, and it is loud' };
+      if (mask & (1 << z)) return { kind: 'breaker', i: b.id, text: 'Reset the breaker. It is loud' };
+      if (base !== 2 && !boost) return { kind: 'breaker', i: b.id, text: 'Throw the breaker: power here for a while. It is loud' };
+      return { kind: 'none', text: boost ? 'Breaker: holding, for now' : 'Breaker: this wing has power', dead: true };
+    });
     const c = L.lift.console;
     tryIt(c.x, c.z, CFG.reach + 0.6, 0.5, () => {
       const s = rep.lift.state;

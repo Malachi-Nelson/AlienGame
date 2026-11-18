@@ -15,7 +15,7 @@ import { Session } from './net/session.js';
 import { layoutMatch } from './sim/world.js';
 import { Input, ACTIONS } from './client/controls.js';
 import { Touch } from './client/touch.js';
-import { Scares, Lights } from './client/scares.js';
+import { Scares, Lights, Sparks } from './client/scares.js';
 import { clamp, clamp01, wrapAngle, yawOf, lerpAngle } from './util.js';
 
 const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
@@ -56,12 +56,14 @@ const applyQuality = () => { gfx.setQuality(settings.q); lamp.castShadow = gfx.q
 applyQuality();
 
 let wantPause = false, spectate = null, cycle = false, lampGain = 1, slowAcc = 0, slowN = 0, fade = 0, matchT = 0, crMuffled = false, muffT = 0, rattleT = 14, klaxT = 0, scanT = 0, lastStatus = ST.ALIVE, ejectT = 0, endShown = false, netT = 0;
+let growlT = 2, recorded = -1, crNear = 1.3, crackN = 0;
+const crView = {};       // the creature as this player's view draws it
 let catchT = -1, quakeT = 0, briefed = false, nearCr = 0;      // being caught (seconds since the lunge, -1 when not); the borehole shifting; whether this match's conditions have been read out; how close the creature is, 0..1
 const beeps = new Map(), steps = new Map(), others = [], tmpV = new THREE.Vector3(), eye = { x: 0, y: 0, z: 0 };
 const GEN = { x: 114, z: 76 };
 
 const session = new Session(L, {
-  onLayout: lay => { if (lay) s3.setLayout(lay); },
+  onLayout: lay => { if (lay) { s3.setLayout(lay); sparks.setLayout(lay); } },
   onPhase: (old, ph) => {
     if (ph === PH.PLAY) { fade = 0; matchT = 0; endShown = false; spectate = null; hud.roomName = ''; hud.banner('Find the eight crew tags', 5); briefed = false; catchT = -1; quakeT = 0; scares.reset(); lights.reset(session.rep.layout && session.rep.layout.zones); }
     if (ph === PH.END) showEnd();
@@ -74,7 +76,13 @@ const session = new Session(L, {
 });
 session.name = settings.name || 'Crew';
 session.plain = query.has('plain');               // for automated checks: matches with nothing sealed, all power on and no incidents
-const scares = new Scares(s3, sound, L), lights = new Lights();
+const scares = new Scares(s3, sound, L), lights = new Lights(), sparks = new Sparks(s3, sound);
+// what this player has done so far, kept between visits: runs, escapes, the best time out, and which kinds of creature they have met
+const record = { runs: 0, out: 0, best: 0, kinds: {} };
+try { Object.assign(record, JSON.parse(localStorage.getItem('los-record') || '{}')); } catch (e) { /* starts again from nothing */ }
+const recordLine = () => { const met = Object.keys(record.kinds || {}).length; return record.runs ? `Runs ${record.runs} · escapes ${record.out}${record.best ? ' · best ' + Math.floor(record.best / 60) + ':' + String(record.best % 60).padStart(2, '0') : ''} · kinds of creature met ${met} of ${TRAITS.length}` : ''; };
+// things worth being told once
+const tip = (key, text) => { if (!settings.tips) settings.tips = {}; if (settings.tips[key]) return; settings.tips[key] = 1; save(); hud.feed(text, 'tip', 11); };
 scares.onRadio = line => hud.feed('Radio: “…' + line + '…”', 'radio');
 
 // keep a phone's screen on while a match is running: hiding in a locker means not touching it for a while
@@ -123,7 +131,7 @@ const hud = new Hud(L, {
   editTouch: () => { controlsOpen = false; touch.edit(true); },
   privateRoom: () => { if (session.private) location.hash = ''; else location.hash = Math.random().toString(36).slice(2, 8); },
 });
-hud.setSettings(settings); hud.setBuild('Build ' + BUILD + '.');
+hud.setSettings(settings); hud.setBuild('Build ' + BUILD + '.'); hud.setRecord(recordLine());
 hud.setLink(location.href.split('#')[0].split('?')[0] + (session.private ? '#' + session.code : ''), session.private);
 window.addEventListener('hashchange', () => location.reload());
 session.connect();
@@ -196,17 +204,20 @@ function onEvent(e) {
     case 'lost': if (cr.has) sound.voice('hiss', cr.x, cr.z, crMuffled); break;
     case 'lunge': if (cr.has) sound.voice('lunge', cr.x, cr.z, crMuffled); if (mine) caught(); break;
     case 'lockchk': {
-      const k = L.lockers[e[2]]; if (k) sound.locker(k.x, k.z, true, muffled(k.x, k.z));
-      if (player.hidden === e[2]) { if (e[3]) caught(); else { player.shake = 1.0; buzz(120); } }       // it is at your locker; then it has the door open
+      const k = L.lockers[e[2]]; if (k && e[3] !== 2) sound.locker(k.x, k.z, true, muffled(k.x, k.z));
+      // it is at your locker; then it has the door open, or, if you held your breath and it believed the silence, it turns away
+      if (player.hidden === e[2]) { if (e[3] === 1) caught(); else if (e[3] === 2) { hud.banner('It did not find you', 3); if (cr.has) sound.voice('hiss', cr.x, cr.z, false); } else { player.shake = 1.0; buzz(120); } }
       break;
     }
     case 'wake': sound.wakeCall(cr.has ? cr.x : GEN.x, cr.has ? cr.z : GEN.z); lights.dip(1.5); hud.feed('Something below has started to move.'); break;
     case 'pwr': {
       const z = e[2], here = z === 9 || L.zoneOf[L.cellOf(cam.position.x, cam.position.z)] === z;
-      if (e[3]) { sound.powerUp(here ? 1 : 0.12); hud.feed(z === 9 ? 'The power is back.' : `Power is back in the ${ZONES[z]}.`); }
-      else { sound.powerDown(here ? 1 : 0.12); hud.feed(z === 9 ? 'Blackout. Every circuit is down.' : `The power has tripped in the ${ZONES[z]}.`); if (here) buzz(60); }
+      if (e[3]) { sound.powerUp(here ? 1 : 0.12); hud.feed(z === 9 ? 'The power is back.' : e[4] ? `The ${ZONES[z]} has power for now.` : `Power is back in the ${ZONES[z]}.`); }
+      else { sound.powerDown(here ? 1 : 0.12); hud.feed(z === 9 ? 'Blackout. Every circuit is down.' : e[4] ? `What the breaker gave the ${ZONES[z]} has run out.` : `The power has tripped in the ${ZONES[z]}.`); if (here) buzz(60); }
       break;
     }
+    case 'breaker': { const b = L.breakers[e[2]]; if (b) sound.breaker(b.x, b.z, muffled(b.x, b.z)); if (me && e[3] !== me.slot && e[3] >= 0) hud.feed(`${nameOf(e[3])} threw the ${ZONES[e[2]]} breaker`); break; }
+    case 'gasp': if (mine) { player.breath = 0; player.gaspT = CFG.breath.gasp; player.hold = false; sound.gasp(); hud.banner('You had to breathe', 2.2, 'warn'); buzz(90); } else { const o = [...rep.players.values()].find(p => p.slot === e[2]), k = o && o.hidden >= 0 ? L.lockers[o.hidden] : null; if (k && Math.hypot(k.x - cam.position.x, k.z - cam.position.z) < 12) hud.feed(`${nameOf(e[2])} could not hold their breath`); } break;
     case 'fault': hud.feed(`Door fault. ${e[2]} doors have moved by themselves.`); break;
     case 'quake': sound.quake(6.5); quakeT = 6.5; lights.dip(1.0); hud.feed('The borehole is shifting. Nothing carries far over that.'); buzz([200, 100, 200, 100, 300]); break;
     case 'down': if (mine) { sound.downed(); player.shake = 1.4; buzz(350); } else hud.feed(`${nameOf(e[2])} is down`); break;
@@ -220,6 +231,7 @@ function onEvent(e) {
     case 'leave': hud.feed('A crew member dropped out'); break;
   }
 }
+const tg0Sealed = t => !!t && t.dead && /^Sealed/.test(t.text);
 // It has you. For a second the view is not yours: it turns to face what caught you.
 function caught() { catchT = 0; sound.sting(settings.scares ? 1 : 0.5); buzz([40, 30, 220]); }
 const zoneNames = (lay, kind) => { const n = []; lay.zones.forEach((p, z) => { if (p === kind) n.push('the ' + ZONES[z]); }); return n.length > 1 ? n.slice(0, -1).join(', ') + ' and ' + n[n.length - 1] : n[0] || ''; };
@@ -242,6 +254,13 @@ function showEnd() {
     again: session.mode === 'solo' ? 'Go again' : '',
     extra: endExtra(rep.layout),
   });
+  // keep count: runs, escapes, best time out, and which kinds of creature this player has now met
+  if (rep.layout && !rep.layout.plain && recorded !== rep.mid && me) {
+    recorded = rep.mid; const key = (TRAITS[rep.layout.trait] || TRAITS[0]).key, k = record.kinds[key] || (record.kinds[key] = { met: 0, out: 0 });
+    record.runs++; k.met++; if (out) { record.out++; k.out++; if (!record.best || r.t < record.best) record.best = r.t; }
+    try { localStorage.setItem('los-record', JSON.stringify(record)); } catch (e) { /* not kept */ }
+    hud.setRecord(recordLine());
+  }
   if (r.win && out) sound.win(); else sound.lose();
   endShown = true; unlock();
 }
@@ -288,7 +307,8 @@ function frame() {
     if (step) sound.step(step);
     if (catchT >= 0) {
       catchT += dt; const c = rep.creature;
-      if (c.has && catchT < 1.1) { player.eyePos(eye, 0); const dx = c.x - eye.x, dz = c.z - eye.z, d = Math.hypot(dx, dz), k = Math.min(1, dt * 12); if (d > 0.3) { player.yaw = lerpAngle(player.yaw, yawOf(dx, dz), k); player.pitch += (Math.atan2(0.9 - eye.y, Math.max(d, 0.8)) - player.pitch) * k; } }
+      // the view goes up to its head: it is a good deal taller than you
+      if (c.has && catchT < 1.1) { player.eyePos(eye, 0); const dx = c.x - eye.x, dz = c.z - eye.z, d = Math.hypot(dx, dz), k = Math.min(1, dt * 12); if (d > 0.3) { player.yaw = lerpAngle(player.yaw, yawOf(dx, dz), k); player.pitch += (Math.atan2((me.status === ST.ALIVE ? 1.75 : 1.5) - eye.y, Math.max(d, 0.8)) - player.pitch) * k; } }
       if (catchT > 1.7 || (catchT > 0.75 && me.status === ST.ALIVE)) catchT = -1;        // it is over, or it missed
     }
     if (quakeT > 0) { quakeT -= dt; player.shake = Math.max(player.shake, 0.1 + 0.5 * Math.sin(Math.PI * clamp01(quakeT / 6.5))); }
@@ -298,7 +318,7 @@ function frame() {
     if (active && alive) {
       const tg = player.target;
       if (input.hit('use') && tg && !tg.dead) {
-        if (tg.kind === 'tag') session.act('T', tg.i); else if (tg.kind === 'item') session.act('I', tg.i); else if (tg.kind === 'door') session.act('D', tg.i); else if (tg.kind === 'lift') session.act('L');
+        if (tg.kind === 'tag') session.act('T', tg.i); else if (tg.kind === 'item') session.act('I', tg.i); else if (tg.kind === 'door') session.act('D', tg.i); else if (tg.kind === 'lift') session.act('L'); else if (tg.kind === 'breaker') session.act('B', tg.i);
         else if (tg.kind === 'hide') { player.enterLocker(tg.i); sound.locker(L.lockers[tg.i].x, L.lockers[tg.i].z, false, false); ejectT = 0; }
         else if (tg.kind === 'unhide') { const k = L.lockers[player.hidden]; player.leaveLocker(); if (k) sound.locker(k.x, k.z, false, false); }
       }
@@ -310,6 +330,15 @@ function frame() {
       } else player.scan = false;
     } else if (!alive) player.scan = false;
     if (TOUCH && (!alive || player.hidden >= 0)) touch.setToggle('scan', false);
+    // shut in a locker: holding the run key holds your breath, for as long as there is air
+    const hiding = alive && player.hidden >= 0; if (TOUCH) touch.setHiding(hiding);
+    // The host keeps the real count and says when the air has run out ('gasp'); the bar here follows the same rule so it
+    // moves without waiting to be told.
+    player.hold = hiding && active && input.held('run') && player.gaspT <= 0;
+    if (player.hold) player.breath = Math.max(0, player.breath - dt / CFG.breath.hold);
+    else { player.breath = Math.min(1, player.breath + dt / CFG.breath.recover); player.gaspT = hiding ? Math.max(0, player.gaspT - dt) : 0; }
+    if (hiding) tip('hide', TOUCH ? 'Hold BREATH while it is outside the locker. It listens. Let go before your air runs out.' : `Hold ${input.label('run')} to hold your breath while it is outside the locker. It listens. Let go before your air runs out.`);
+    if (tg0Sealed(player.target)) tip('sealed', 'A door with bars and a red lamp is sealed for this match. The schematic marks them in red.');
     // two people went for the same locker: the host says who got it
     if (player.hidden >= 0 && me.hidden !== player.hidden) { ejectT += dt; if (ejectT > 1 && others.some(o => o.hidden === player.hidden)) { player.leaveLocker(); hud.feed('Someone is already in there'); } } else ejectT = 0;
     session.local.x = player.x; session.local.z = player.z; session.local.yaw = player.yaw; session.local.pitch = player.pitch; session.local.f = player.flags(); session.local.lk = player.hidden; session.local.rv = player.rv;
@@ -370,7 +399,19 @@ function frame() {
   if (crOn) {
     muffT -= dt; if (muffT <= 0) { muffT = 0.2; crMuffled = muffled(cr.x, cr.z); }
     dist = Math.hypot(cr.x - cam.position.x, cr.z - cam.position.z);
-    creature.update(dt, cr, (x, z, sp) => { if (dist < 55) sound.tick(x, z, sp, crMuffled); });
+    const ahead = dist > 0.05 ? ((cr.x - cam.position.x) * hx + (cr.z - cam.position.z) * hz) / dist : 1, onMe = me && cr.tgt === me.slot, st = cr.state;
+    cr.shine = lampOn && !crMuffled && dist < 26 && ahead > 0.88 ? 1 : 0;                  // your lamp is on it: with its own lights out, they still glint
+    // its head follows you: when it is looking for you, waiting for you or after you, and as soon as it starts to notice you
+    cr.watch = !crMuffled && st !== CS.IDLE && ((dist < 18 && (st === CS.SUSPECT || st === CS.AMBUSH || st === CS.BAIT || st === CS.LOCKER || ((st === CS.HUNT || st === CS.ATTACK) && onMe))) || (dist < 24 && me && me.status === ST.ALIVE && me.aware > 0.2)) ? cam.position : null;
+    // It leans a long way forward when it strikes. Drawn where it really stands, a metre off, its head would be behind your
+    // eyes; so in this view it is held back to arm's length, and what you get is its face.
+    crNear += ((st === CS.ATTACK || catchT >= 0 ? 2.4 : 1.3) - crNear) * Math.min(1, dt * 9);
+    Object.assign(crView, cr);
+    if (dist < crNear && dist > 0.05) { const k = crNear / dist; crView.x = cam.position.x + (cr.x - cam.position.x) * k; crView.z = cam.position.z + (cr.z - cam.position.z) * k; }
+    creature.update(dt, crView, (x, z, sp) => { if (dist < 55) sound.tick(x, z, sp, crMuffled); });
+    if (creature.cracks !== crackN) { crackN = creature.cracks; if (dist < 16 && !cr.lampsOut || dist < 8) sound.crack(cr.x, cr.z, crMuffled); }
+    // close enough to hear it breathe; on a hunt, to hear what it sounds like when it means it
+    if (st !== CS.IDLE && !cr.lampsOut && dist < 17) { growlT -= dt; if (growlT <= 0) { const h = st === CS.HUNT || st === CS.ATTACK; growlT = h ? 1.5 + Math.random() * 0.9 : 2.6 + Math.random() * 1.8; sound.voice(h ? 'snarl' : 'breath', cr.x, cr.z, crMuffled); } }
     if (cr.state === CS.ROAM && dist < 40) { rattleT -= dt; if (rattleT <= 0) { rattleT = 10 + Math.random() * 16; sound.voice('rattle', cr.x, cr.z, crMuffled); } }
   }
   avatars.sync(showWorld ? (watching ? others.filter(o => o.id !== watching.id) : others) : [], dt, cam.position);
@@ -393,8 +434,13 @@ function frame() {
   const down = me && me.status === ST.DOWN;
   nearCr = awake ? clamp01(1 - (dist - 3) / 11) : 0;          // the lights start to catch when it is within fourteen metres
   const hereZ = L.zoneOf[L.cellOf(clamp(cam.position.x, 0, 137), clamp(cam.position.z, 0, 97))], inDark = showWorld && lights.want[hereZ] < 0.5;
-  sound.update(dt, { static: showWorld ? stat : 0, danger: showWorld && me && me.status === ST.ALIVE ? clamp01((hunted ? 0.7 : 0) + stat * 0.5) : 0, winded: playing ? clamp01(1 - player.stamina / 45) : 0, gen: showWorld ? clamp01(1 - Math.hypot(cam.position.x - GEN.x, cam.position.z - GEN.z) / 30) : 0,
-    tension: showWorld ? clamp01(stat * 0.9 + (hunted ? 0.45 : 0) + (inDark ? 0.21 : 0.05)) : 0.04 });
+  sound.update(dt, { static: showWorld ? stat : 0, danger: showWorld && me && me.status === ST.ALIVE ? clamp01((hunted ? 0.7 : 0) + stat * 0.5 + (player.hold ? 0.4 + 0.5 * (1 - player.breath) : 0)) : 0, winded: playing ? clamp01(1 - player.stamina / 45) : 0, gen: showWorld ? clamp01(1 - Math.hypot(cam.position.x - GEN.x, cam.position.z - GEN.z) / 30) : 0,
+    tension: showWorld ? clamp01(stat * 0.9 + (hunted ? 0.45 : 0) + (inDark ? 0.21 : 0.05)) : 0.04, hiding: playing && !!me && me.status === ST.ALIVE && player.hidden >= 0, holding: playing && player.hold });
+  if (showWorld) sparks.update(dt, cam.position, !settings.scares, muffled);
+  if (playing && me && me.status === ST.ALIVE) {
+    if (nearCr > 0.2) tip('near', 'The lights stutter when it is close. Crouch, lamp off, and listen for the tapping.');
+    if (inDark) tip('dark', 'No power in this wing. The red lamps are emergency lighting. Every wing has a yellow breaker box that can bring its power back for a while.');
+  }
   scares.update(dt, { playing, alive: !!me && me.status === ST.ALIVE && !watching, hidden: player.hidden, scares: settings.scares, calm: !awake || dist > 28, cam: cam.position, yaw: camYaw, fx: hx, fz: hz, lampOn, rep, others });
   if (scares.fx.shake) player.shake = Math.max(player.shake, scares.fx.shake); if (scares.fx.dip) lights.dip(scares.fx.dip);
   if (playing && player.scan && me.status === ST.ALIVE) { scanT -= dt; } else scanT = 0.15;
@@ -430,7 +476,7 @@ function frame() {
   hud.update(dt, {
     show: playing && rep.phase === PH.PLAY, tags: rep.tagCount(), objective, bars, roster, room: playing ? L.roomName(cam.position.x, cam.position.z) : '',
     prompt: tg, hold: revT ? revT.revProg : 0, hidden: playing && player.hidden >= 0, seen: playing && me ? me.aware : 0,
-    stamina: player.stamina / CFG.player.stamina, spent: player.spent, lamp: player.light, crouch: player.crouch, sounders: me ? me.decoys : 0,
+    stamina: playing && player.hidden >= 0 ? player.breath : player.stamina / CFG.player.stamina, spent: playing && player.hidden >= 0 ? player.gaspT > 0 : player.spent, holding: player.hold, lamp: player.light, crouch: player.crouch, sounders: me ? me.decoys : 0,
     scan, marks, map: playing && input.held('map') && !upright, mapPlayers, sealed: rep.layout ? rep.layout.sealed : null, dark: lights.want,
     down: down ? { title: 'Down', text: session.mode === 'solo' ? (me.wind ? 'Hold still.' : 'That was your second wind.') : (me.revProg > 0 ? 'Someone is picking you up' : 'A crewmate can pick you up'), frac: me.revProg > 0 ? me.revProg : me.timer / CFG.down.bleed } : null,
   });
@@ -476,5 +522,5 @@ try {
   w.onmessage = () => { if (session.mode !== 'menu' && (document.hidden || performance.now() - session.lastT > 90)) session.tick(performance.now()); };     // also covers a visible page whose drawing has been slowed right down
 } catch (e) { /* no workers: the match pauses while the host's tab is hidden */ }
 
-window.__los = { session, player, hud, gfx, sound, Sound, L, cam, settings, input, touch, s3, scares, lights, creature, layoutMatch, build: BUILD };
+window.__los = { session, player, hud, gfx, sound, Sound, L, cam, settings, input, touch, s3, scares, lights, sparks, creature, record, layoutMatch, build: BUILD };
 requestAnimationFrame(frame);

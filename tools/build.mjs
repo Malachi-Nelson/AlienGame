@@ -13,7 +13,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'dist');
 const args = process.argv.slice(2), dev = args.includes('--dev') || args.includes('--serve'), serve = args.includes('--serve');
 const BUILD = process.env.BUILD || new Date().toISOString().slice(0, 16).replace('T', ' ');
-const PROTO = process.env.PROTO || 'v2';
+const PROTO = process.env.PROTO || 'v3';
 mkdirSync(dist, { recursive: true });
 
 const common = { bundle: true, format: 'iife', target: 'es2020', minify: !serve, sourcemap: serve ? 'inline' : false, legalComments: 'none', define: { __BUILD__: JSON.stringify(BUILD), __PROTO__: JSON.stringify(PROTO) }, logLevel: 'warning' };

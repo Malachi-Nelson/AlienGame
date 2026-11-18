@@ -62,6 +62,8 @@ export class Touch {
   }
   // the use button lights when there is something in reach to use
   setLive(live) { this.btns.use.el.classList.toggle('lit', !!live); }
+  // shut in a locker there is nowhere to run: the RUN button becomes BREATH, and is held
+  setHiding(on) { if (this.hiding === on) return; this.hiding = on; this.running = false; this.input.hold('run', false); const el = this.btns.run.el; el.classList.remove('lit'); el.textContent = on ? 'BREATH' : 'RUN'; }
   setToggle(id, on) { if (this.input.touch.has(id) === on) return; this.input.hold(id, on); this.btns[id].el.classList.toggle('lit', on); }
 
   btnOf(el) { while (el && el !== this.root) { if (el.dataset && el.dataset.id) return el.dataset.id; el = el.parentElement; } return null; }
@@ -79,7 +81,7 @@ export class Touch {
     if (id) {
       const b = this.btns[id]; b.el.classList.add('on'); this.ptrs.set(e.pointerId, { kind: 'btn', id, x: e.clientX, y: e.clientY, far: 0 });
       if (b.kind === 'pause') this.on.pause();
-      else if (b.kind === 'run') { this.running = !this.running; b.el.classList.toggle('lit', this.running); }
+      else if (b.kind === 'run') { if (this.hiding) this.input.hold('run', true); else { this.running = !this.running; b.el.classList.toggle('lit', this.running); } }
       else if (b.kind === 'toggle') this.setToggle(id, !this.input.touch.has(id));
       else if (b.kind === 'hold') this.input.hold(id, true);
       else this.input.press(id);
@@ -112,7 +114,7 @@ export class Touch {
   up(e) {
     const p = this.ptrs.get(e.pointerId); if (!p) return; this.ptrs.delete(e.pointerId);
     if (p.kind === 'stick') { this.input.move.x = this.input.move.y = 0; this.base.hidden = true; if (this.running) { this.running = false; this.btns.run.el.classList.remove('lit'); } }
-    else if (p.kind === 'btn') { const b = this.btns[p.id]; b.el.classList.remove('on'); if (b.kind === 'hold') this.input.hold(p.id, false); }
+    else if (p.kind === 'btn') { const b = this.btns[p.id]; b.el.classList.remove('on'); if (b.kind === 'hold' || b.kind === 'run') this.input.hold(p.id, false); }
     else if (p.kind === 'drag') { this.bar.classList.remove('ghost'); this.on.edited(); }
   }
 

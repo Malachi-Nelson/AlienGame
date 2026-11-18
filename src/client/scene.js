@@ -2,16 +2,25 @@
 // with the match. Fixed lights are worked out once per vertex at load time; only lamps and a few small lights are live.
 import * as THREE from 'three';
 import { T, W, H, C, LOW_H, DUCT_H, lightAt, ZONES } from '../level.js';
-import { makeTextures, glowTexture, signTexture } from './textures.js';
+import { makeTextures, glowTexture, signTexture, decalSheet, waySign } from './textures.js';
+import { distField } from '../nav.js';
 import { rng32, clamp01 } from '../util.js';
-import { LIFT } from '../sim/defs.js';
+import { LIFT, PWR } from '../sim/defs.js';
 
 const BLOCK = 12;       // the level is cut into blocks of this many tiles so that what is off screen is not drawn
+// The four sides of a tile: which way the neighbour lies; where that wall starts; which way it runs (left to right for
+// someone facing it); texture start and direction.
+const SIDES = [
+  [0, -1, (x0, z0) => [x0, z0], [T, 0, 0], (cx, cz) => cx, 1],
+  [0, 1, (x0, z0) => [x0 + T, z0 + T], [-T, 0, 0], (cx, cz) => cx + 1, -1],
+  [-1, 0, (x0, z0) => [x0, z0 + T], [0, 0, -T], (cx, cz) => cz + 1, -1],
+  [1, 0, (x0, z0) => [x0 + T, z0], [0, 0, T], (cx, cz) => cz, 1],
+];
 const DOOR_H = 2.5;
 
 // ---------------------------------------------------------------------------------------------- geometry with baked light
 class Geo {
-  constructor() { this.pos = []; this.nor = []; this.uv = []; this.col = []; this.bk = []; this.bk2 = []; this.zw = []; this.idx = []; this.n = 0; }
+  constructor() { this.pos = []; this.nor = []; this.uv = []; this.col = []; this.bk = []; this.bk2 = []; this.zw = []; this.em = []; this.idx = []; this.n = 0; }
   // A flat patch: corner o, edges u and v (u x v is the facing), cut into su by sv pieces. disp nudges inner points for rough ice.
   quad(L, o, u, v, su, sv, uv0, uvU, uvV, color, disp, gain = 1) {
     let nx = u[1] * v[2] - u[2] * v[1], ny = u[2] * v[0] - u[0] * v[2], nz = u[0] * v[1] - u[1] * v[0];
@@ -28,6 +37,7 @@ class Geo {
       this.bk.push(e[0] * gain, e[1] * gain, e[2] * gain); this.bk2.push(e[3] * gain, e[4] * gain, e[5] * gain);
       // what share of this point's light comes from each power circuit (the first circuit's share is whatever is left over)
       const zt = e[6] + e[7] + e[8] + e[9] + e[10]; if (zt > 1e-9) this.zw.push(e[7] / zt, e[8] / zt, e[9] / zt, e[10] / zt); else this.zw.push(0, 0, 0, 0);
+      this.em.push(e[11] * gain, e[12]);          // red from the emergency lamps, and whose circuit they stand in for
       this.n++;
     }
     const row = su + 1;
@@ -61,6 +71,7 @@ class Geo {
     g.setAttribute('bake', new THREE.Float32BufferAttribute(this.bk, 3));
     g.setAttribute('bake2', new THREE.Float32BufferAttribute(this.bk2, 3));
     g.setAttribute('zw', new THREE.Float32BufferAttribute(this.zw, 4));
+    g.setAttribute('em', new THREE.Float32BufferAttribute(this.em, 2));
     g.setIndex(this.idx);
     g.computeBoundingSphere(); g.computeBoundingBox();
     return g;
@@ -104,8 +115,9 @@ export class Scene3D {
     this.L = L;
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.FogExp2(0x04070a, 0.03);
-    this.uni = { uFlick: { value: 1 }, uBakeGain: { value: 6 }, uZone0: { value: 1 }, uZone: { value: new THREE.Vector4(1, 1, 1, 1) } };
+    this.uni = { uFlick: { value: 1 }, uBakeGain: { value: 6 }, uZone0: { value: 1 }, uZone: { value: new THREE.Vector4(1, 1, 1, 1) }, uOff0: { value: 0 }, uOff: { value: new THREE.Vector4(0, 0, 0, 0) } };
     this.pow = new Float32Array(ZONES.length).fill(1);       // how much light each power circuit is giving right now (see setPower)
+    this.off = new Float32Array(ZONES.length);               // and how far each has gone over to its emergency lamps
     this.tx = makeTextures(opts.aniso || 4);
     this.glowTex = glowTexture();
     this.time = 0; this.flick = 1; this.flickT = 0; this.flickTo = 1;
@@ -120,11 +132,17 @@ export class Scene3D {
     // the light fittings themselves, one material per circuit so that they go dark with it; F: the ones that stutter
     this.fitMat = ZONES.map(() => new THREE.MeshBasicMaterial({ vertexColors: true })); this.fitMatF = ZONES.map(() => new THREE.MeshBasicMaterial({ vertexColors: true }));
     this.sealMat = new THREE.MeshBasicMaterial({ color: 0xff2a12 });
+    this.emMat = ZONES.map(() => new THREE.MeshBasicMaterial({ color: 0x300604 }));
+    this.sheet = decalSheet();
+    this.mats.decal = this.baked({ map: this.sheet.tex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3, roughness: 0.6, metalness: 0.0 });
+    this.dress = null; this.signs = []; this.breakers = []; this.wallFaces = []; this.zones = null;
     this.mats.ice.normalScale.set(1.4, 1.4);
     this.doors = []; this.tags = []; this.items = []; this.decoys = new Map(); this.sprites = [];
     this.buildStatic();
     this.buildDoors();
     this.buildLift();
+    this.buildBreakers();
+    this.buildSigns();
     this.scene.add(new THREE.AmbientLight(0x8fb4d0, 0.3));
   }
 
@@ -132,10 +150,10 @@ export class Scene3D {
   baked(params) {
     const m = new THREE.MeshStandardMaterial(Object.assign({ vertexColors: true }, params)), uni = this.uni;
     m.onBeforeCompile = sh => {
-      sh.uniforms.uFlick = uni.uFlick; sh.uniforms.uBakeGain = uni.uBakeGain; sh.uniforms.uZone0 = uni.uZone0; sh.uniforms.uZone = uni.uZone;
+      sh.uniforms.uFlick = uni.uFlick; sh.uniforms.uBakeGain = uni.uBakeGain; sh.uniforms.uZone0 = uni.uZone0; sh.uniforms.uZone = uni.uZone; sh.uniforms.uOff0 = uni.uOff0; sh.uniforms.uOff = uni.uOff;
       sh.vertexShader = sh.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute vec3 bake;\nattribute vec3 bake2;\nattribute vec4 zw;\nvarying vec3 vBake;\nuniform float uFlick;\nuniform float uBakeGain;\nuniform float uZone0;\nuniform vec4 uZone;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvBake = (bake + bake2 * uFlick) * uBakeGain * (uZone0 * (1.0 - zw.x - zw.y - zw.z - zw.w) + dot(zw, uZone));');
+        .replace('#include <common>', '#include <common>\nattribute vec3 bake;\nattribute vec3 bake2;\nattribute vec4 zw;\nattribute vec2 em;\nvarying vec3 vBake;\nuniform float uFlick;\nuniform float uBakeGain;\nuniform float uZone0;\nuniform vec4 uZone;\nuniform float uOff0;\nuniform vec4 uOff;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nfloat emOn = em.y < 0.5 ? uOff0 : em.y < 1.5 ? uOff.x : em.y < 2.5 ? uOff.y : em.y < 3.5 ? uOff.z : uOff.w;\nvBake = ((bake + bake2 * uFlick) * (uZone0 * (1.0 - zw.x - zw.y - zw.z - zw.w) + dot(zw, uZone)) + vec3(1.0, 0.1, 0.045) * (em.x * emOn)) * uBakeGain;');
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <common>', '#include <common>\nvarying vec3 vBake;')
         .replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>\nirradiance += vBake;');
@@ -157,27 +175,25 @@ export class Scene3D {
   // The fixed light around a point, for the materials above.
   ambientAt(x, y, z, out) {
     const e = lightAt(this.L, x, y, z, 0, 0, 0), f = this.uni.uFlick.value, p = this.pow, zt = e[6] + e[7] + e[8] + e[9] + e[10];
-    const g = this.uni.uBakeGain.value * 2.0 * (zt > 1e-9 ? (e[6] * p[0] + e[7] * p[1] + e[8] * p[2] + e[9] * p[3] + e[10] * p[4]) / zt : 1);
-    return out.setRGB((e[0] + e[3] * f) * g, (e[1] + e[4] * f) * g, (e[2] + e[5] * f) * g);
+    const g0 = this.uni.uBakeGain.value * 2.0, g = g0 * (zt > 1e-9 ? (e[6] * p[0] + e[7] * p[1] + e[8] * p[2] + e[9] * p[3] + e[10] * p[4]) / zt : 1), red = e[11] * this.off[e[12]] * g0;
+    return out.setRGB((e[0] + e[3] * f) * g + red, (e[1] + e[4] * f) * g + red * 0.1, (e[2] + e[5] * f) * g + red * 0.045);
   }
   // levels: how bright each of the five circuits is, 0 to 1. all: one more factor over the lot (a flicker, a dip).
   setPower(levels, all = 1) {
-    const p = this.pow; for (let z = 0; z < p.length; z++) p[z] = levels[z] * all;
+    const p = this.pow, o = this.off; for (let z = 0; z < p.length; z++) { p[z] = levels[z] * all; o[z] = clamp01((1 - levels[z]) / 0.93); }
     this.uni.uZone0.value = p[0]; this.uni.uZone.value.set(p[1], p[2], p[3], p[4]);
+    this.uni.uOff0.value = o[0]; this.uni.uOff.value.set(o[1], o[2], o[3], o[4]);
   }
 
   // ------------------------------------------------------------------------------------------ everything that never moves
   buildStatic() {
-    const L = this.L, geos = new Map(), glow = new GlowGeo(), fit = ZONES.map(() => new GlowGeo()), fitF = ZONES.map(() => new GlowGeo()), rnd = rng32(4471);
+    const L = this.L, geos = new Map(), glow = new GlowGeo(), fit = ZONES.map(() => new GlowGeo()), fitF = ZONES.map(() => new GlowGeo()), emFit = ZONES.map(() => new GlowGeo()), rnd = rng32(4471);
+    const solid = n => !open(n), steel = [0.2, 0.22, 0.24], copper = [0.34, 0.24, 0.13], dull = [0.16, 0.17, 0.19];
+    // where a frame (two posts and a beam) can stand: plain floor, not ice, not a doorway
+    const framed = n => { const cc = L.cells[n]; return (cc === C.FLOOR || cc === C.TALL || cc === C.LOW) && L.doorAt[n] < 0 && !L.ice[n]; };
     const G = (name, cx, cz) => { const k = name + ':' + ((cx / BLOCK) | 0) + ':' + ((cz / BLOCK) | 0); let g = geos.get(k); if (!g) { g = new Geo(); g.mat = name; geos.set(k, g); } return g; };
     const open = i => { const c = L.cells[i]; return c !== C.SOLID && c !== C.LOCKER; };
     const iceDisp = (x, y, z) => 0.05 + 0.32 * vnoise(x * 0.9, y * 0.9, z * 0.9);
-    const SIDES = [   // which way the neighbour lies; where the wall starts; which way it runs; texture start and direction
-      [0, -1, (x0, z0) => [x0, z0], [T, 0, 0], (cx, cz) => cx, 1],
-      [0, 1, (x0, z0) => [x0 + T, z0 + T], [-T, 0, 0], (cx, cz) => cx + 1, -1],
-      [-1, 0, (x0, z0) => [x0, z0 + T], [0, 0, -T], (cx, cz) => cz + 1, -1],
-      [1, 0, (x0, z0) => [x0 + T, z0], [0, 0, T], (cx, cz) => cz, 1],
-    ];
     for (let cz = 1; cz < H - 1; cz++) for (let cx = 1; cx < W - 1; cx++) {
       const i = cz * W + cx, c = L.cells[i]; if (!open(i)) continue;
       const isIce = !!L.ice[i], x0 = cx * T, z0 = cz * T, h = L.ceil[i];
@@ -186,6 +202,7 @@ export class Scene3D {
       let ft = [1, 1, 1];
       if (c === C.LIFT) ft = [1.25, 1.0, 0.35]; else if (c === C.DUCT) ft = [0.55, 0.55, 0.6]; else if (isGate) ft = [1.2, 1.0, 0.45];
       else if (isIce) ft = [0.6, 0.66, 0.72];
+      else if (L.doorAt[i] >= 0) ft = [1.12, 0.96, 0.5];              // a worn yellow threshold in every doorway
       else { for (const n of [i - 1, i + 1, i - W, i + W]) if (L.cells[n] === C.PIT) ft = [1.25, 1.05, 0.5]; }
       if (c !== C.PIT) G(fm, cx, cz).quad(L, [x0, 0, z0], [0, 0, T], [T, 0, 0], 2, 2, [cx, cz], [0, 1], [1, 0], ft);
       const ct = isIce ? [0.55, 0.62, 0.68] : c === C.DUCT ? [0.5, 0.5, 0.55] : [1, 1, 1];
@@ -202,6 +219,39 @@ export class Scene3D {
         else if (L.ceil[n] < h - 0.01) wall(L.ceil[n], h, wt);
       }
       this.buildProp(L, G('prop', cx, cz), glow, cx, cz, c, L.propKind[i], rnd);
+      // --- the structure: a frame every third tile, posts against the walls and a beam under the ceiling
+      if (framed(i)) {
+        const P = G('prop', cx, cz);
+        if (cx % 3 === 0 && framed(i - 1)) {
+          if (h <= 5.2) P.box(L, x0 - 0.09, h - 0.2, z0, x0 + 0.09, h, z0 + T, steel, true);
+          if (solid(i - W) && solid(i - W - 1)) P.box(L, x0 - 0.11, 0, z0, x0 + 0.11, h, z0 + 0.13, steel);
+          if (solid(i + W) && solid(i + W - 1)) P.box(L, x0 - 0.11, 0, z0 + T - 0.13, x0 + 0.11, h, z0 + T, steel);
+        }
+        if (cz % 3 === 0 && framed(i - W)) {
+          if (h <= 5.2) P.box(L, x0, h - 0.2, z0 - 0.09, x0 + T, h, z0 + 0.09, steel, true);
+          if (solid(i - 1) && solid(i - 1 - W)) P.box(L, x0, 0, z0 - 0.11, x0 + 0.13, h, z0 + 0.11, steel);
+          if (solid(i + 1) && solid(i + 1 - W)) P.box(L, x0 + T - 0.13, 0, z0 - 0.11, x0 + T, h, z0 + 0.11, steel);
+        }
+        // --- pipe runs along one side of every corridor, under the beams
+        const room = L.roomId[i] >= 0 ? L.rooms[L.roomId[i]] : null;
+        if (room && room.kind === 'hall' && c === C.FLOOR && h <= 3.6) {
+          const alongX = room.x1 - room.x0 >= room.z1 - room.z0;
+          if (alongX && cz === room.z0 && solid(i - W)) { P.box(L, x0, h - 0.44, z0 + 0.3, x0 + T, h - 0.31, z0 + 0.43, copper, true); P.box(L, x0, h - 0.37, z0 + 0.56, x0 + T, h - 0.29, z0 + 0.64, dull, true); P.box(L, x0, h - 0.56, z0 + 0.14, x0 + T, h - 0.5, z0 + 0.2, dull, true); }
+          if (!alongX && cx === room.x0 && solid(i - 1)) { P.box(L, x0 + 0.3, h - 0.44, z0, x0 + 0.43, h - 0.31, z0 + T, copper, true); P.box(L, x0 + 0.56, h - 0.37, z0, x0 + 0.64, h - 0.29, z0 + T, dull, true); P.box(L, x0 + 0.14, h - 0.56, z0, x0 + 0.2, h - 0.5, z0 + T, dull, true); }
+        }
+        // wall faces that marks can be left on, for dressing a match
+        if (c === C.FLOOR && room) for (let k = 0; k < 4; k++) { const n = i + SIDES[k][0] + SIDES[k][1] * W; if (L.cells[n] === C.SOLID) this.wallFaces.push({ i, k, hall: room.kind === 'hall', cx, cz }); }
+      }
+    }
+    // the emergency lamps' own housings, one colour per circuit so that they come up when it goes down
+    for (const l of L.elights) { const g2 = emFit[l.zone]; if (l.dx) g2.box(l.x - 0.03, l.y - 0.05, l.z - 0.11, l.x + 0.03, l.y + 0.05, l.z + 0.11, [1, 1, 1]); else g2.box(l.x - 0.11, l.y - 0.05, l.z - 0.03, l.x + 0.11, l.y + 0.05, l.z + 0.03, [1, 1, 1]); }
+    for (let z = 0; z < ZONES.length; z++) { if (!emFit[z].n) continue; const m = new THREE.Mesh(emFit[z].build(), this.emMat[z]); m.matrixAutoUpdate = false; m.frustumCulled = false; this.scene.add(m); }
+    // the breaker boxes
+    for (const b of L.breakers) {
+      const g2 = G('prop', b.cx, b.cz), yel = [0.78, 0.6, 0.14], along = b.dx ? [0, 1] : [1, 0], nx = -b.dx, nz = -b.dz;
+      const bx = (a0, a1, y0, y1, d0, d1, col) => { const xs = [b.x + along[0] * a0 + nx * d0, b.x + along[0] * a1 + nx * d1], zs = [b.z + along[1] * a0 + nz * d0, b.z + along[1] * a1 + nz * d1]; g2.box(L, Math.min(...xs), y0, Math.min(...zs), Math.max(...xs), y1, Math.max(...zs), col, true); };
+      bx(-0.3, 0.3, 0.95, 1.75, 0, 0.14, yel); bx(-0.24, 0.24, 1.02, 1.42, 0.14, 0.16, [0.2, 0.2, 0.2]); bx(-0.05, 0.05, 1.1, 1.36, 0.16, 0.24, [0.75, 0.12, 0.08]);
+      bx(-0.04, 0.04, 1.75, Math.min(L.ceil[L.idx(b.cx, b.cz)], 3.2), 0.02, 0.1, dull);
     }
     // lockers: a door set into the wall, facing the tile you use it from
     for (const k of L.lockers) {
@@ -429,7 +479,77 @@ export class Scene3D {
     g.scale.setScalar(scale); g.userData = { led, mats: [mat] };
     return g;
   }
+  // ------------------------------------------------------------------------------------------ breakers and the way out
+  buildBreakers() {
+    const geo = new THREE.PlaneGeometry(0.16, 0.1);
+    for (const b of this.L.breakers) {
+      const mat = new THREE.MeshBasicMaterial({ color: 0x30ff80 }), m = new THREE.Mesh(geo, mat), nx = -b.dx, nz = -b.dz;
+      m.position.set(b.x + nx * 0.165, 1.56, b.z + nz * 0.165); m.rotation.y = Math.atan2(nx, nz); m.matrixAutoUpdate = false; m.updateMatrix(); this.scene.add(m);
+      this.breakers.push({ b, mat });
+    }
+  }
+  // Plates along the corridors that point the way back to the lift. Which way each one points depends on the match,
+  // because sealed doors change the shortest way, so each plate has both arrows and shows one.
+  buildSigns() {
+    const L = this.L, geo = new THREE.PlaneGeometry(1.0, 0.235), mats = [new THREE.MeshBasicMaterial({ map: waySign(-1), color: 0x8c8c8c }), new THREE.MeshBasicMaterial({ map: waySign(1), color: 0x8c8c8c })];
+    for (const f of this.wallFaces) {
+      if (!f.hall || (f.cx * 3 + f.cz * 5) % 6 !== 0 || this.signs.some(s => s.i === f.i)) continue;
+      const [dx, dz] = SIDES[f.k], nx = -dx, nz = -dz, x = (f.cx + 0.5 + dx * 0.5) * T + nx * 0.02, z = (f.cz + 0.5 + dz * 0.5) * T + nz * 0.02;
+      const rec = { i: f.i, right: f.i + (-dz) + dx * W, left: f.i - (-dz) - dx * W, m: [] };       // the tiles to the right and left of someone reading it
+      for (const mat of mats) { const m = new THREE.Mesh(geo, mat); m.position.set(x, 2.12, z); m.rotation.y = Math.atan2(nx, nz); m.matrixAutoUpdate = false; m.updateMatrix(); m.visible = false; this.scene.add(m); rec.m.push(m); }
+      this.signs.push(rec);
+    }
+  }
+  routeSigns(layout) {
+    const L = this.L, walk = L.walkP.slice(); for (const d of layout.sealed) for (const c of L.doors[d].cells) walk[c] = 0;
+    const dist = distField(walk, L.idx(10, 24)), at = n => (dist[n] >= 0 ? dist[n] : 1e9);
+    for (const s of this.signs) { const here = at(s.i), r = at(s.right), l = at(s.left); s.m[0].visible = l < here && l <= r; s.m[1].visible = r < here && r < l; }
+  }
+
+  // ------------------------------------------------------------------------------------------ what was left behind
+  // Stains, gouges, things scratched into the walls, and some of the crew. Laid out from the match's seed, so everyone sees the same.
+  dressMatch(layout) {
+    if (this.dress) { this.scene.remove(this.dress); this.dress.traverse(o => { if (o.geometry) o.geometry.dispose(); }); }
+    const L = this.L, grp = this.dress = new THREE.Group(), r = rng32(((layout.seed | 0) ^ 0x5eed5) >>> 0), dg = new Geo(), bg = new Geo(), sh = this.sheet;
+    const onFloor = (x, z, half, uv, tint = [1, 1, 1]) => dg.quad(L, [x - half, 0.014, z - half], [0, 0, half * 2], [half * 2, 0, 0], 1, 1, [uv[0], uv[1]], [0, uv[3]], [uv[2], 0], tint);
+    // a: how far along the wall face it starts, in metres. The picture reads left to right for someone facing the wall.
+    const onWall = (f, a, y0, w, h, uv, tint = [1, 1, 1]) => {
+      const [dx, dz, org, u] = SIDES[f.k], o = org(f.cx * T, f.cz * T), ux = u[0] / T, uz = u[2] / T, nx = -dx, nz = -dz;
+      dg.quad(L, [o[0] + ux * a + nx * 0.014, y0, o[1] + uz * a + nz * 0.014], [ux * w, 0, uz * w], [0, h, 0], 1, 1, [uv[0], uv[1]], [uv[2], 0], [0, uv[3]], tint);
+    };
+    const pick = arr => arr[Math.floor(r() * arr.length)];
+    // some of the crew are still where they fell, beside their tags
+    const suit = [0.44, 0.33, 0.21], dark = [0.1, 0.1, 0.11];
+    layout.tags.forEach((t, n) => {
+      if (r() > 0.6) return;
+      const d = Math.floor(r() * 4), ax = [1, 0, -1, 0][d], az = [0, 1, 0, -1][d], bxp = -az, bzp = ax, x = t.x + bxp * 0.42, z = t.z + bzp * 0.42;
+      const bx = (a0, a1, b0, b1, y0, y1, col) => { const xs = [x + ax * a0 + bxp * b0, x + ax * a1 + bxp * b1], zs = [z + az * a0 + bzp * b0, z + az * a1 + bzp * b1]; bg.box(L, Math.min(...xs), y0, Math.min(...zs), Math.max(...xs), y1, Math.max(...zs), col); };
+      bx(-0.2, 0.5, -0.24, 0.24, 0, 0.2, suit); bx(0.5, 0.62, -0.13, 0.13, 0.02, 0.17, dark);                       // trunk, and the collar where the helmet was
+      bx(-0.95, -0.2, -0.22, -0.05, 0, 0.16, suit); bx(-0.62, -0.2, 0.05, 0.22, 0, 0.16, suit); bx(-0.72, -0.56, 0.05, 0.6, 0, 0.15, suit);     // one leg straight, one bent out
+      bx(-0.1, 0.45, -0.4, -0.27, 0, 0.12, suit); bx(0.2, 0.36, 0.24, 0.8, 0, 0.12, suit);                           // one arm by the side, one flung wide
+      bx(-1.0, -0.86, -0.24, -0.03, 0, 0.2, dark); bx(-0.76, -0.52, 0.55, 0.7, 0, 0.18, dark);                       // boots
+      onFloor(t.x - ax * 0.1, t.z - az * 0.1, 0.85, pick(sh.stain));
+      const dc = L.cellOf(t.x - ax * 1.6, t.z - az * 1.6); if (L.cells[dc] === C.FLOOR && r() < 0.6) onFloor(t.x - ax * 1.5, t.z - az * 1.5, 0.8, sh.drag[0]);
+    });
+    // more of it in the corridors
+    const halls = this.wallFaces.filter(f => f.hall), rooms = this.wallFaces.filter(f => !f.hall);
+    for (let n = 0; n < 9; n++) { const f = pick(halls); onFloor((f.cx + 0.3 + r() * 0.4) * T, (f.cz + 0.3 + r() * 0.4) * T, 0.5 + r() * 0.45, pick(sh.stain)); }
+    for (let n = 0; n < 14; n++) { const f = pick(n < 10 ? halls : rooms), w = 0.8 + r() * 0.5; onWall(f, r() * (T - w), 0.5 + r() * 0.9, w, w * 1.15, pick(sh.gouge)); }
+    for (let n = 0; n < 7; n++) { const f = pick(n < 5 ? rooms : halls), w = 1.5 + r() * 0.3; onWall(f, (T - w) / 2, 1.15 + r() * 0.45, w, w / 4, sh.scrawl[Math.floor(r() * sh.scrawl.length)], [0.9, 0.92, 0.94]); }
+    // and on the doors that were welded shut: something wanted through
+    for (const id of layout.sealed) {
+      if (r() > 0.6) continue; const d = L.doors[id], w = Math.min(1.1, d.len - 0.5), a0 = -w / 2, uv = pick(sh.gouge);
+      for (const s of [-1, 1]) {
+        if (d.axis === 'x') dg.quad(L, [d.x + a0 * s, 0.55, d.z + 0.142 * s], [w * s, 0, 0], [0, w * 1.15, 0], 1, 1, [uv[0], uv[1]], [uv[2], 0], [0, uv[3]], [1, 1, 1]);
+        else dg.quad(L, [d.x + 0.142 * s, 0.55, d.z - a0 * s], [0, 0, -w * s], [0, w * 1.15, 0], 1, 1, [uv[0], uv[1]], [uv[2], 0], [0, uv[3]], [1, 1, 1]);
+      }
+    }
+    if (bg.n) { const m = new THREE.Mesh(bg.build(), this.mats.prop); m.castShadow = true; m.receiveShadow = true; m.matrixAutoUpdate = false; grp.add(m); }
+    if (dg.n) { const m = new THREE.Mesh(dg.build(), this.mats.decal); m.receiveShadow = true; m.matrixAutoUpdate = false; m.renderOrder = 1; grp.add(m); }
+    this.scene.add(grp);
+  }
   setLayout(layout) {
+    this.zones = layout.zones; this.routeSigns(layout); this.dressMatch(layout);
     for (const r of this.doors) { r.sealed = layout.sealed.includes(r.d.id); if (r.seal) r.seal.visible = r.sealed; r.open = -1; }
     for (const t of this.tags) this.scene.remove(t.obj); for (const t of this.items) this.scene.remove(t.obj);
     for (const d of this.decoys.values()) this.scene.remove(d.obj); this.decoys.clear();
@@ -446,7 +566,10 @@ export class Scene3D {
     this.flickT -= dt; if (this.flickT <= 0) { const r = Math.random(); this.flickTo = r < 0.18 ? 0.08 : r < 0.3 ? 0.5 : 1; this.flickT = this.flickTo < 1 ? 0.04 + Math.random() * 0.14 : 0.1 + Math.random() * 1.6; }
     this.flick += (this.flickTo - this.flick) * Math.min(1, dt * 40);
     this.uni.uFlick.value = this.flick;
-    for (let z = 0; z < this.pow.length; z++) { const on = 0.04 + 0.96 * Math.min(1, this.pow[z]); this.fitMat[z].color.setScalar(on); this.fitMatF[z].color.setScalar(on * (0.1 + 0.9 * this.flick)); }
+    for (let z = 0; z < this.pow.length; z++) { const on = 0.04 + 0.96 * Math.min(1, this.pow[z]); this.fitMat[z].color.setScalar(on); this.fitMatF[z].color.setScalar(on * (0.1 + 0.9 * this.flick)); const e = 0.16 + 2.4 * this.off[z]; this.emMat[z].color.setRGB(e, e * 0.1, e * 0.05); }
+    // each breaker's tell-tale: green while its wing has power, red and blinking while it has none, amber while it runs on what the breaker gave it
+    const mask = rep ? rep.zoneOff | 0 : 0, tick = Math.sin(this.time * 5) > 0;
+    for (const k of this.breakers) { const z = k.b.zone, boost = !!(mask & (64 << z)), out = !!(mask & 32) || !!(mask & (1 << z)) || (!!this.zones && rep && this.zones[z] !== PWR.ON && !boost); k.mat.color.setHex(!rep ? 0x30ff80 : out ? (tick ? 0xff3018 : 0x3a0a05) : boost ? 0xffa820 : 0x30ff80); }
     if (!rep) return;
     for (const r of this.doors) {
       const o = rep.doorOpen[r.d.id]; if (o === r.open && r.jam === rep.doorJam[r.d.id]) continue; r.open = o; r.jam = rep.doorJam[r.d.id];

@@ -37,7 +37,7 @@ export function layoutMatch(L, seed) {
       const s = L.tagSpots[i];
       if (tags.every(j => Math.hypot(L.tagSpots[j].cx - s.cx, L.tagSpots[j].cz - s.cz) >= minD)) tags.push(i);
     }
-  const logs = r.shuffle([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]).slice(0, CFG.TAGS);
+  const logs = r.shuffle([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]).slice(0, CFG.TAGS);
   const itemOrder = r.shuffle(L.itemSpots.map((s, i) => i));
   const cs = r.pick(L.creatureSpawns);
   const doorsOpen = L.doors.map(d => (!d.gate && r() < 0.3 ? 1 : 0));
@@ -54,7 +54,7 @@ export function layoutMatch(L, seed) {
     else { zones[z[0]] = PWR.DEAD; zones[z[1]] = PWR.DEAD; }
   }
   return {
-    plain,
+    plain, seed: Math.abs(seed),
     tags: tags.map((i, k) => Object.assign(at(L.tagSpots[i]), { spot: i, log: logs[k] })),
     items: items.map(i => Object.assign(at(L.itemSpots[i]), { spot: i })),
     creatureCell: L.idx(cs.cx, cs.cz),
@@ -72,7 +72,7 @@ export class World {
     this.phase = PH.LOBBY; this.mid = 0; this.seed = 0; this.time = 0; this.clock = 0;
     const nd = L.doors.length;
     this.doorOpen = new Float32Array(nd); this.doorWant = new Uint8Array(nd); this.doorJam = new Float32Array(nd); this.doorSeal = new Uint8Array(nd);
-    this.zoneBase = new Array(NZ).fill(PWR.ON); this.zoneOff = new Float32Array(NZ); this.blackT = 0; this.rumbleT = 0; this.incT = 1e9;
+    this.zoneBase = new Array(NZ).fill(PWR.ON); this.zoneOff = new Float32Array(NZ); this.zoneBoost = new Float32Array(NZ); this.blackT = 0; this.rumbleT = 0; this.incT = 1e9;
     this.trait = TRAITS[0]; this.wake = CFG.WAKE; this.liftWait = CFG.lift.call; this.plain = true;
     this.tags = []; this.items = []; this.tagBits = 0; this.itemBits = 0; this.tagsTaken = 0;
     this.decoys = []; this.decoyId = 0;
@@ -94,6 +94,7 @@ export class World {
       crouch: false, light: false, scan: false, hidden: -1, hidFor: 0, rv: -1,
       status: ST.ALIVE, timer: 0, revProg: 0, revTick: false, revBy: -1, revNoise: 0, invuln: 0,
       decoys: CFG.START_SOUNDERS, tags: 0, wind: 0, ack: 0, stepAcc: 0, scanT: 0, inT: this.clock, aware: 0, visible: false, ready: false,
+      hold: false, breath: 1, gaspT: 0, breathT: 0,
     };
     this.players.set(id, p);
     if (this.phase === PH.PLAY) this.event('join', slot);
@@ -118,7 +119,7 @@ export class World {
       const dx = x - p.x, dz = z - p.z, dist = Math.hypot(dx, dz);
       if (dist < 12) { p.vx = lerp(p.vx, dx / dtIn, 0.6); p.vz = lerp(p.vz, dz / dtIn, 0.6); } else { p.vx = p.vz = 0; }
       p.x = x; p.z = z; p.yaw = +inp.yaw || 0; p.pitch = +inp.pitch || 0; p.speed = Math.hypot(p.vx, p.vz);
-      const f = inp.f | 0; p.crouch = !!(f & F.CROUCH); p.light = !!(f & F.LIGHT); p.scan = !!(f & F.SCAN);
+      const f = inp.f | 0; p.crouch = !!(f & F.CROUCH); p.light = !!(f & F.LIGHT); p.scan = !!(f & F.SCAN); p.hold = !!(f & F.HOLD);
       p.rv = Number.isInteger(inp.rv) ? inp.rv : -1;
       // lockers: one person each
       const lk = Number.isInteger(inp.lk) && inp.lk >= 0 && inp.lk < this.L.lockers.length ? inp.lk : -1;
@@ -160,6 +161,9 @@ export class World {
       const eye = p.crouch ? CFG.player.eyeCrouch : CFG.player.eye;
       this.decoys.push({ id: ++this.decoyId, x: p.x, y: eye - 0.15, z: p.z, vx: -Math.sin(yaw) * Math.cos(pitch) * sp, vy: Math.sin(pitch) * sp + 2.2, vz: -Math.cos(yaw) * Math.cos(pitch) * sp, state: 0, t: 0, beep: 0, ox: p.x, oz: p.z, owner: p.id });
       this.event('throw', p.slot);
+    } else if (type === 'B') {                            // throw a breaker
+      const b = L.breakers[a[2] | 0]; if (!b || !near(b.ax, b.az, CFG.reach + 1)) return;
+      this.throwBreaker(b.zone, p);
     } else if (type === 'L') {                            // call the lift
       if (this.lift.state !== LIFT.READY || !near(L.lift.console.x, L.lift.console.z, CFG.reach + 1.6)) return;
       this.lift.state = LIFT.CALLED; this.lift.timer = this.liftWait; this.lift.klax = 0; this.event('liftcall', p.slot, this.liftWait);
@@ -170,7 +174,7 @@ export class World {
   // The parts of a match's set-up that the rules need: sealed doors, power, what the creature is like, the timings.
   useLayout(lay) {
     this.plain = lay.plain; this.doorSeal.fill(0); for (const d of lay.sealed) this.doorSeal[d] = 1;
-    this.zoneBase = lay.zones.slice(); this.zoneOff.fill(0); this.blackT = 0; this.rumbleT = 0;
+    this.zoneBase = lay.zones.slice(); this.zoneOff.fill(0); this.zoneBoost.fill(0); this.blackT = 0; this.rumbleT = 0;
     this.trait = TRAITS[lay.trait] || TRAITS[0]; this.wake = lay.wake; this.liftWait = lay.liftWait;
     this.incT = 50 + this.rand() * 50;
   }
@@ -188,11 +192,24 @@ export class World {
     this.event('start');
   }
   // How much of its light a circuit is giving right now, and so how well lit a tile is for the creature's eyes.
-  zonePower(z) { return this.blackT > 0 || this.zoneOff[z] > 0 || this.zoneBase[z] === PWR.DEAD ? 0.07 : this.zoneBase[z] === PWR.FAILING ? 0.55 : 1; }
+  zonePower(z) { return this.blackT > 0 || this.zoneOff[z] > 0 ? 0.07 : this.zoneBoost[z] > 0 ? 1 : this.zoneBase[z] === PWR.DEAD ? 0.07 : this.zoneBase[z] === PWR.FAILING ? 0.55 : 1; }
+  // Someone throws a wing's breaker. It ends a blackout, resets a circuit that has tripped, and gives a dead or failing wing
+  // steady power for a while. It is also loud.
+  throwBreaker(z, p) {
+    if (!(z >= 0 && z < NZ)) return false;
+    const b = this.L.breakers[z], dark = this.blackT > 0 || this.zoneOff[z] > 0, weak = this.zoneBase[z] !== PWR.ON && this.zoneBoost[z] <= 0;
+    if (!dark && !weak) return false;                                  // nothing for it to do
+    if (this.blackT > 0) { this.blackT = 0; this.event('pwr', 9, 1); }
+    if (this.zoneOff[z] > 0) { this.zoneOff[z] = 0; if (this.zoneBase[z] === PWR.ON) this.event('pwr', z, 1); }
+    if (this.zoneBase[z] !== PWR.ON) { this.zoneBoost[z] = CFG.boost; this.event('pwr', z, 1, 1); }
+    this.event('breaker', z, p ? p.slot : -1); this.noise(b.ax, b.az, 'breaker', p ? p.id : null);
+    return true;
+  }
   litAt(cell) { return this.L.lightLevel[cell] * this.zonePower(this.L.zoneOf[cell]); }
+  holding(p) { return p.hidden >= 0 && p.hold && p.gaspT <= 0 && p.breath > 0; }
   respawn(p) {
     const sp = this.L.spawns[p.slot % this.L.spawns.length];
-    Object.assign(p, { x: (sp.cx + 0.5) * T, z: (sp.cz + 0.5) * T, vx: 0, vz: 0, speed: 0, status: ST.ALIVE, timer: 0, revProg: 0, invuln: 0, hidden: -1, hidFor: 0, decoys: CFG.START_SOUNDERS, tags: 0, stepAcc: 0, aware: 0, visible: false, rv: -1 });
+    Object.assign(p, { x: (sp.cx + 0.5) * T, z: (sp.cz + 0.5) * T, vx: 0, vz: 0, speed: 0, status: ST.ALIVE, timer: 0, revProg: 0, invuln: 0, hidden: -1, hidFor: 0, decoys: CFG.START_SOUNDERS, tags: 0, stepAcc: 0, aware: 0, visible: false, rv: -1, hold: false, breath: 1, gaspT: 0, breathT: 0 });
   }
   toLobby() { this.phase = PH.LOBBY; this.decoys = []; this.noises.length = 0; this.creature.state = CS.IDLE; for (const p of this.players.values()) { p.status = ST.ALIVE; p.hidden = -1; } }
   finish(win) {
@@ -235,7 +252,19 @@ export class World {
     for (const p of this.players.values()) {
       if (p.status !== ST.ALIVE) continue;
       alive++; if (p.invuln > 0) p.invuln -= dt;
-      if (p.hidden >= 0) p.hidFor += dt;
+      if (p.hidden >= 0) {
+        p.hidFor += dt;
+        // shut in a locker you can hold your breath, for a while. Breathing is quiet, but not silent to something standing outside.
+        const k = L.lockers[p.hidden];
+        if (p.gaspT > 0) p.gaspT -= dt;
+        if (p.hold && p.gaspT <= 0 && p.breath > 0) {
+          p.breath -= dt / CFG.breath.hold;
+          if (p.breath <= 0) { p.breath = 0; p.gaspT = CFG.breath.gasp; this.noise(k.x, k.z, 'gasp', p.id, { locker: k.id }); this.event('gasp', p.slot); }
+        } else {
+          p.breath = Math.min(1, p.breath + dt / CFG.breath.recover);
+          p.breathT -= dt; if (p.breathT <= 0) { p.breathT = 1.3; this.noise(k.x, k.z, 'breath', p.id, { locker: k.id }); }
+        }
+      } else { p.breath = Math.min(1, p.breath + dt / CFG.breath.recover); p.gaspT = 0; p.breathT = 0.6; }
       if (p.scan && p.hidden < 0) { p.scanT -= dt; if (p.scanT <= 0) { p.scanT = 1.3; this.noise(p.x, p.z, 'scan', p.id); } } else p.scanT = 0.3;
       if (p.rv >= 0 && p.hidden < 0) { const t = this.bySlot(p.rv); if (t && t.status === ST.DOWN && Math.hypot(t.x - p.x, t.z - p.z) < CFG.down.reach) { t.revTick = true; t.revBy = p.slot; t.revById = p.id; } }
     }
@@ -265,7 +294,10 @@ export class World {
 
   // Things that go wrong with the outpost while you are in it. None of them is on a timetable.
   stepIncidents(dt) {
-    for (let z = 0; z < NZ; z++) if (this.zoneOff[z] > 0) { this.zoneOff[z] -= dt; if (this.zoneOff[z] <= 0) { this.zoneOff[z] = 0; this.event('pwr', z, 1); } }
+    for (let z = 0; z < NZ; z++) {
+      if (this.zoneOff[z] > 0) { this.zoneOff[z] -= dt; if (this.zoneOff[z] <= 0) { this.zoneOff[z] = 0; if (this.zoneBase[z] === PWR.ON || this.zoneBoost[z] > 0) this.event('pwr', z, 1); } }
+      if (this.zoneBoost[z] > 0) { this.zoneBoost[z] -= dt; if (this.zoneBoost[z] <= 0) { this.zoneBoost[z] = 0; this.event('pwr', z, 0, 1); } }       // what the breaker gave has run out
+    }
     if (this.blackT > 0) { this.blackT -= dt; if (this.blackT <= 0) { this.blackT = 0; this.event('pwr', 9, 1); } }
     if (this.rumbleT > 0) this.rumbleT -= dt;
     if (this.plain || this.lift.state === LIFT.LEFT) return;
@@ -281,7 +313,7 @@ export class World {
   }
   // one circuit trips and comes back by itself a while later
   tripZone(z, secs) {
-    if (!(z >= 0 && z < NZ) || this.zoneBase[z] === PWR.DEAD || this.zoneOff[z] > 0 || this.blackT > 0) return false;
+    if (!(z >= 0 && z < NZ) || (this.zoneBase[z] === PWR.DEAD && this.zoneBoost[z] <= 0) || this.zoneOff[z] > 0 || this.blackT > 0) return false;
     this.zoneOff[z] = secs || 24 + this.rand() * 16; this.event('pwr', z, 0); return true;
   }
   blackout(secs) { if (this.blackT > 0) return false; this.blackT = secs || 14 + this.rand() * 9; this.event('pwr', 9, 0); return true; }
@@ -349,7 +381,7 @@ export class World {
     let dr = ''; for (let d = 0; d < this.doorWant.length; d++) dr += this.doorJam[d] > 0 ? '2' : this.doorWant[d] ? '1' : '0';
     return {
       ph: this.phase, mid: this.mid, sd: this.seed, t: r(this.time * 10),
-      c: [r(c.x * 100), r(c.z * 100), r(c.yaw * 1000), c.state, c.targetSlot(), (c.lampsOut ? 1 : 0) | (c.forcing ? 2 : 0), r(c.speed * 100), c.state === CS.LOCKER ? c.lockerId : -1],
+      c: [r(c.x * 100), r(c.z * 100), r(c.yaw * 1000), c.state, c.targetSlot(), (c.lampsOut ? 1 : 0) | (c.forcing ? 2 : 0) | (c.rearT > 0 ? 4 : 0), r(c.speed * 100), c.state === CS.LOCKER ? c.lockerId : -1],
       tg: this.tagBits, it: this.itemBits, dr,
       lf: [this.lift.state, r(this.lift.timer * 10), r(this.lift.board * 10)],
       zo: this.powerMask(),
@@ -361,7 +393,8 @@ export class World {
   }
 
   // which circuits have tripped (one bit each), and bit 5 for a blackout
-  powerMask() { let m = this.blackT > 0 ? 32 : 0; for (let z = 0; z < NZ; z++) if (this.zoneOff[z] > 0) m |= 1 << z; return m; }
+  // and bits 6 to 10 for wings that are running on what a breaker gave them
+  powerMask() { let m = this.blackT > 0 ? 32 : 0; for (let z = 0; z < NZ; z++) { if (this.zoneOff[z] > 0) m |= 1 << z; if (this.zoneBoost[z] > 0) m |= 64 << z; } return m; }
 
   // Rebuild a world from the last snapshot seen, so another player can take over as host if the first one leaves.
   static restore(L, s, salt = 1) {
@@ -372,7 +405,7 @@ export class World {
       w.tags = lay.tags.map((t, i) => Object.assign({ taken: !!(s.tg & (1 << i)) }, t)); w.items = lay.items.map((t, i) => Object.assign({ taken: !!(s.it & (1 << i)) }, t));
       w.tagBits = s.tg; w.itemBits = s.it; w.tagsTaken = w.tags.filter(t => t.taken).length;
       w.useLayout(lay);
-      const zo = s.zo | 0; for (let z = 0; z < NZ; z++) if (zo & (1 << z)) w.zoneOff[z] = 12; if (zo & 32) w.blackT = 8;      // whatever was out stays out a little longer
+      const zo = s.zo | 0; for (let z = 0; z < NZ; z++) { if (zo & (1 << z)) w.zoneOff[z] = 12; if (zo & (64 << z)) w.zoneBoost[z] = 30; } if (zo & 32) w.blackT = 8;      // whatever was out stays out a little longer
       w.creature.reset(lay.creatureCell);
     }
     for (let d = 0; d < w.doorWant.length; d++) { const ch = s.dr.charCodeAt(d) - 48; w.doorWant[d] = ch ? 1 : 0; w.doorOpen[d] = ch ? 1 : 0; w.doorJam[d] = ch === 2 ? 10 : 0; }

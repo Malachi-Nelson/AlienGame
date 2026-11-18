@@ -137,6 +137,36 @@ export function makeTextures(aniso = 4) {
   return out;
 }
 
+// The creature's skin: pallid, blotched, with dark veins close under it, and creased enough for a lamp to catch. One sheet
+// does for all of it.
+export function fleshTexture() {
+  const S = 256, r = rng32(0xf1e5), c = makeCanvas(S, S), x = c.getContext('2d'), h = makeCanvas(S, S), hx = h.getContext('2d');
+  x.fillStyle = '#958d7f'; x.fillRect(0, 0, S, S); hx.fillStyle = '#808080'; hx.fillRect(0, 0, S, S);
+  for (let i = 0; i < 80; i++) {            // bruised in places, and paler where it is stretched
+    const px = r() * S, py = r() * S, rad = 10 + r() * 38, dark = r() < 0.62;
+    for (const ox of [-S, 0, S]) for (const oy of [-S, 0, S]) {
+      if (px + ox + rad < 0 || px + ox - rad > S || py + oy + rad < 0 || py + oy - rad > S) continue;
+      const g = x.createRadialGradient(px + ox, py + oy, 0, px + ox, py + oy, rad); g.addColorStop(0, dark ? 'rgba(66,52,60,0.55)' : 'rgba(205,197,178,0.4)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+      x.fillStyle = g; x.fillRect(px + ox - rad, py + oy - rad, rad * 2, rad * 2);
+    }
+  }
+  const vein = (px, py, a, len, w, depth) => {
+    x.strokeStyle = `rgba(46,38,56,${(0.3 + 0.4 * r()).toFixed(2)})`; x.lineWidth = w; x.lineCap = 'round'; x.beginPath(); x.moveTo(px, py);
+    const forks = [];
+    while (len > 0) { a += (r() - 0.5) * 0.95; px += Math.cos(a) * 5; py += Math.sin(a) * 5; x.lineTo(px, py); len -= 5; if (depth < 2 && r() < 0.14) forks.push([px, py, a + (r() < 0.5 ? 0.85 : -0.85), len * 0.65]); }
+    x.stroke(); for (const f of forks) vein(f[0], f[1], f[2], f[3], w * 0.6, depth + 1);
+  };
+  for (let i = 0; i < 18; i++) vein(r() * S, r() * S, r() * 6.28, 50 + r() * 130, 1.1 + r() * 1.3, 0);
+  speckle(x, r, 1100, S, S, ['#544c48', '#b5ac9a', '#6e5a5c'], 1, 2.6, 0.4);
+  for (let i = 0; i < 300; i++) {           // creases
+    hx.strokeStyle = r() < 0.55 ? 'rgba(16,16,16,0.55)' : 'rgba(238,238,238,0.35)'; hx.lineWidth = 0.6 + r() * 1.8;
+    const px = r() * S, py = r() * S, a = r() * 6.28, len = 6 + r() * 28;
+    hx.beginPath(); hx.moveTo(px, py); hx.quadraticCurveTo(px + Math.cos(a) * len * 0.5 + (r() - 0.5) * 9, py + Math.sin(a) * len * 0.5 + (r() - 0.5) * 9, px + Math.cos(a) * len, py + Math.sin(a) * len); hx.stroke();
+  }
+  speckle(hx, r, 1600, S, S, ['#585858', '#a8a8a8'], 1, 3, 0.5);
+  return { map: tex(c, true, 4), normalMap: tex(normalFromHeight(h, 2.4), false, 4) };
+}
+
 // A soft round glow for small lights.
 export function glowTexture() {
   const c = makeCanvas(64, 64), x = c.getContext('2d'), g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
@@ -163,4 +193,57 @@ export function nameTexture(text, color) {
   x.lineWidth = 6; x.strokeStyle = 'rgba(0,0,0,0.75)'; x.strokeText(text, 128, 32);
   x.fillStyle = color; x.fillText(text, 128, 32);
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+// Marks left on the outpost: stains, gouges, and things scratched into the paint. One sheet; the scene cuts it up.
+// Returns the texture and, for each kind of mark, where its pictures are: [u, v, width, height] in texture units.
+export function decalSheet() {
+  const S = 1024, c = makeCanvas(S, S), x = c.getContext('2d'), r = rng32(7719);
+  const cell = (px, py, w, h, draw) => { x.save(); x.beginPath(); x.rect(px, py, w, h); x.clip(); x.translate(px, py); draw(w, h); x.restore(); return [px / S, 1 - (py + h) / S, w / S, h / S]; };
+  const out = { stain: [], gouge: [], drag: [], scrawl: [] };
+  // something pooled here and dried
+  for (let k = 0; k < 4; k++) out.stain.push(cell(k * 256, 0, 256, 256, (w, h) => {
+    for (let i = 0; i < 30; i++) { const a = r() * 6.283, d = Math.pow(r(), 1.5) * 78, rad = 12 + r() * 44 * (1 - d / 100), px = w / 2 + Math.cos(a) * d * (k === 3 ? 0.55 : 1), py = h / 2 + Math.sin(a) * d;
+      const g = x.createRadialGradient(px, py, 0, px, py, rad); g.addColorStop(0, 'rgba(44,6,4,0.9)'); g.addColorStop(0.55, 'rgba(36,5,3,0.62)'); g.addColorStop(1, 'rgba(26,3,2,0)'); x.fillStyle = g; x.fillRect(px - rad, py - rad, rad * 2, rad * 2); }
+    for (let i = 0; i < 46; i++) { x.fillStyle = `rgba(40,5,3,${0.35 + r() * 0.45})`; const a = r() * 6.283, d = 36 + r() * 84; x.beginPath(); x.arc(w / 2 + Math.cos(a) * d, h / 2 + Math.sin(a) * d, 1 + r() * 4.5, 0, 7); x.fill(); }
+  }));
+  // something raked the wall: dark cuts with a bright bare-metal lip
+  for (let k = 0; k < 3; k++) out.gouge.push(cell(k * 256, 256, 256, 256, (w, h) => {
+    const n = 3 + (k % 2), lean = (r() - 0.5) * 0.5;
+    for (let j = 0; j < n; j++) {
+      let px = 30 + j * (w - 60) / (n - 1 || 1) * 0.8 + r() * 14, py = 14 + r() * 26; const len = h - 50 - r() * 60, steps = 9, pts = [[px, py]];
+      for (let i = 1; i <= steps; i++) pts.push([px + lean * len * i / steps + (r() - 0.5) * 7, py + len * i / steps]);
+      for (const [off, col, wd] of [[2.2, 'rgba(176,188,194,0.75)', 2.2], [0, 'rgba(6,7,8,0.95)', 6], [0, 'rgba(0,0,0,1)', 2.5]]) {
+        for (let i = 1; i < pts.length; i++) { const t = i / pts.length, taper = Math.sin(t * Math.PI) * 0.85 + 0.15; x.strokeStyle = col; x.lineWidth = wd * taper; x.lineCap = 'round'; x.beginPath(); x.moveTo(pts[i - 1][0] + off, pts[i - 1][1]); x.lineTo(pts[i][0] + off, pts[i][1]); x.stroke(); }
+      }
+    }
+  }));
+  // something was dragged
+  out.drag.push(cell(768, 256, 256, 256, (w, h) => {
+    for (let i = 0; i < 70; i++) { const py = 60 + r() * (h - 120), x0 = r() * 70, len = 90 + r() * (w - 150); const g = x.createLinearGradient(x0, 0, x0 + len, 0); g.addColorStop(0, 'rgba(40,5,3,0)'); g.addColorStop(0.2, `rgba(40,5,3,${0.25 + r() * 0.4})`); g.addColorStop(1, 'rgba(40,5,3,0)'); x.fillStyle = g; x.fillRect(x0, py, len, 2 + r() * 9); }
+  }));
+  // what the crew scratched into the paint before the end
+  const lines = ['IT LEARNS', 'LIGHTS OUT', 'DONT RUN', 'NOT THE LOCKERS', 'IT WAITS', 'LISTEN', 'SORRY', null];
+  lines.forEach((text, k) => out.scrawl.push(cell((k % 2) * 512, 512 + Math.floor(k / 2) * 128, 512, 128, (w, h) => {
+    x.strokeStyle = 'rgba(206,214,218,0.82)'; x.lineCap = 'round'; x.lineJoin = 'round';
+    if (!text) {                                   // nineteen days, counted off in fives
+      let px = 34; for (let n = 0; n < 19; n++) { const five = n % 5 === 4; x.lineWidth = 3 + r() * 2; x.beginPath(); if (five) { x.moveTo(px - 64 + r() * 6, 88 + r() * 8); x.lineTo(px - 6 + r() * 6, 36 + r() * 8); px += 26; } else { x.moveTo(px + (r() - 0.5) * 5, 30 + r() * 10); x.lineTo(px + (r() - 0.5) * 7, 92 + r() * 10); px += 15; } x.stroke(); }
+      return;
+    }
+    const size = Math.min(78, (w - 50) / text.length * 1.5); x.font = `700 ${size}px "Arial Narrow", "Helvetica Neue", Arial, sans-serif`; x.textBaseline = 'middle';
+    let px = (w - x.measureText(text).width * 1.06) / 2;
+    for (const ch of text) { const cw = x.measureText(ch).width * 1.06; for (let pass = 0; pass < 3; pass++) { x.save(); x.translate(px + (r() - 0.5) * 3, h / 2 + (r() - 0.5) * 9); x.rotate((r() - 0.5) * 0.16); x.lineWidth = 1.6 + r() * 1.6; x.strokeText(ch, 0, 0); x.restore(); } px += cw; }
+  })));
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+  return { tex: t, ...out };
+}
+
+// The way back to the lift, on plates along the corridors. dir: -1 the arrow points left, 1 right.
+export function waySign(dir) {
+  const c = makeCanvas(256, 60), x = c.getContext('2d');
+  x.fillStyle = '#100c04'; x.fillRect(0, 0, 256, 60); x.strokeStyle = '#8a6a1c'; x.lineWidth = 2; x.strokeRect(2, 2, 252, 56);
+  x.fillStyle = '#ffc24a'; x.font = '700 27px "Arial Narrow", Arial, sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.letterSpacing = '2px';
+  x.fillText('DOCK · LIFT', 128 + dir * -17, 32);
+  const ax = dir > 0 ? 226 : 30; x.beginPath(); x.moveTo(ax + dir * 16, 30); x.lineTo(ax - dir * 10, 14); x.lineTo(ax - dir * 10, 46); x.closePath(); x.fill();
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
 }

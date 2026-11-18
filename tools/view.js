@@ -1,5 +1,6 @@
 // A bare look at the level from any spot, for checking how things look. Not part of the game.
 //   view.html?x=26&z=50&yaw=90&pitch=0&lamp=1&cr=30,50,0,4   (tile-free world metres; cr = creature x,z,yaw,state)
+//   also: rear=1 (it has reared up), out=1 (its lights are out), shine=1 (a lamp is on it), pow=1,0.07,1,1,1 (power per circuit), li=60 (lamp strength)
 import * as THREE from 'three';
 import { buildLevel } from '../src/level.js';
 import { Scene3D } from '../src/client/scene.js';
@@ -21,14 +22,16 @@ const cr = new CreatureModel(s3), crp = (q.get('cr') || '').split(',').map(Numbe
 if (crp.length >= 2) cr.setVisible(true);
 const rep = { doorOpen: new Float32Array(L.doors.length).fill(num('doors', 0)), doorWant: new Uint8Array(L.doors.length), doorJam: new Uint8Array(L.doors.length), tagBits: 0, itemBits: 0, decoys: new Map(), lift: { state: num('lift', 0), timer: 3, board: 0 } };
 gfx.uni.uStatic.value = num('static', 0); gfx.uni.uExposure.value = num('exp', gfx.uni.uExposure.value); gfx.uni.uSlats.value = num('slats', 0);
+const pw = (q.get('pow') || '').split(',').map(Number);      // pow=1,0.07,1,1,1: how bright each power circuit is
 let last = performance.now(), frames = 0; window.ready = false;
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   gfx.resize(innerWidth, innerHeight); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix();
   const f = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion), r = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
   lamp.position.copy(cam.position).addScaledVector(r, 0.22).add(new THREE.Vector3(0, -0.18, 0)); lamp.target.position.copy(cam.position).addScaledVector(f, 10);
+  if (pw.length === 5) s3.setPower(pw, 1);
   s3.update(dt, rep);
-  if (crp.length >= 2) { const mv = num('walk', 0); cr.update(dt, { x: crp[0] + Math.sin(now / 1000) * mv, z: crp[1], yaw: (crp[2] || 0) * Math.PI / 180, state: crp[3] || 1, lampsOut: false }, null); }
+  if (crp.length >= 2) { const mv = num('walk', 0); cr.update(dt, { x: crp[0] + Math.sin(now / 1000) * mv, z: crp[1], yaw: (crp[2] || 0) * Math.PI / 180, state: crp[3] || 1, lampsOut: !!num('out', 0), rear: !!num('rear', 0), shine: num('shine', 0), watch: num('watch', 0) ? cam.position : null }, null); }
   gfx.uni.uTime.value = now / 1000;
   gfx.render(s3.scene, cam);
   if (++frames > 8) window.ready = true;

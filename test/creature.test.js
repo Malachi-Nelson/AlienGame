@@ -135,3 +135,16 @@ test('long matches with a full crew doing everything at once never break the sim
     const s = JSON.stringify(w.snapshot()); assert.ok(s.length < 3500, `snapshot is ${s.length} bytes`);
   }
 });
+
+test('seen from a distance it rears up first, then comes faster than it can keep up', () => {
+  const { w, c, bots: [b] } = setup(); w.incT = 1e9;
+  place(c, 8, 41, Math.PI / 2); put(b, 20, 41); b.light = true; b.tick(1 / 30);          // the length of the quarters hall apart
+  c.startHunt(b.p);
+  assert.ok(c.rearT > 0 && w.snapshot().c[5] & 4, 'everyone is told it has reared');
+  const x0 = c.x; run(w, [b], 0.4); assert.ok(Math.abs(c.x - x0) < 0.2, 'it should hold its ground while it rears');
+  let top = 0; run(w, [b], 1.5, () => { top = Math.max(top, c.speed); });
+  assert.ok(top > CFG.creature.chase + 0.6, `the first rush should be quick (${top})`);
+  // from close to, there is no warning
+  const s2 = setup(), c2 = s2.c, b2 = s2.bots[0]; place(c2, 8, 41, Math.PI / 2); put(b2, 10, 41); b2.tick(1 / 30); c2.startHunt(b2.p);
+  assert.equal(c2.rearT, 0);
+});

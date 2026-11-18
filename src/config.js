@@ -1,6 +1,6 @@
 // Every number that shapes how the game plays, in one place.
 export const CFG = {
-  PROTO: typeof __PROTO__ === 'string' ? __PROTO__ : 'v2',     // set at build time; change it when players' messages change shape, so old and new tabs do not meet
+  PROTO: typeof __PROTO__ === 'string' ? __PROTO__ : 'v3',     // set at build time; change it when players' messages change shape, so old and new tabs do not meet
   MAX_PLAYERS: 6,
   TAGS: 8,                   // crew tags to recover
   ITEMS: 7,                  // sounders lying around the outpost
@@ -10,7 +10,9 @@ export const CFG = {
 
   player: { r: 0.32, eye: 1.62, eyeCrouch: 0.9, walk: 2.6, run: 5.1, crouch: 1.35, stamina: 100, drain: 17, regen: 12, regenDelay: 1.2 },
   // how far each sound carries, in metres, before walls and doors muffle it
-  noise: { run: 15, walk: 6.5, crouch: 1.6, door: 9, locker: 5, tag: 8, scan: 10, decoy: 30, revive: 11, klaxon: 80 },
+  noise: { run: 15, walk: 6.5, crouch: 1.6, door: 9, locker: 5, tag: 8, scan: 10, decoy: 30, revive: 11, klaxon: 80, breath: 3.6, gasp: 8, breaker: 18 },
+  breath: { hold: 10, recover: 5, gasp: 2.5 },       // shut in a locker: seconds of air, seconds to get it all back, and how long a gasp leaves you unable to hold it again
+  boost: 80,                 // seconds of power a breaker gives a wing that is otherwise dead or failing
   down: { bleed: 50, revive: 4, reach: 2.6, invuln: 3.5 },
   lift: { call: 45, board: 15 },
   reach: 2.4,                // how close you must be to use something

@@ -53,6 +53,7 @@ export class Hud {
   setSettings(s) { for (const p of ['s', 'p']) { $(p + '-sens').value = s.sens; $(p + '-vol').value = s.vol; $(p + '-bri').value = s.bri; $(p + '-q').value = s.q; $(p + '-scare').checked = s.scares !== false; } if (document.activeElement !== $('m-name')) $('m-name').value = s.name || ''; }
   setLink(url, priv) { $('m-link').value = url; $('l-link').value = url; $('m-priv').textContent = priv ? 'Back to the public room' : 'Make a private room'; }
   setBuild(b) { $('m-build').textContent = b; }
+  setRecord(text) { for (const id of ['m-record', 'e-record']) { $(id).textContent = text; $(id).hidden = !text; } }
   setNet(text, level, canHost, joinLabel) {
     this.text('m-status', text); this.cls('m-status', 'on', level === 2); this.cls('m-status', 'part', level === 1);
     this.set('m-host', 'd', !canHost, (e, v) => (e.disabled = v)); this.set('m-join', 'd', !joinLabel, (e, v) => (e.disabled = v));
@@ -71,7 +72,7 @@ export class Hud {
 
   // keyboard or touch: what the prompts and the key list on the title card say, and where the read-outs sit
   setTouch(on, input) {
-    this.touch = on; this.useKey = on ? 'USE' : input.label('use'); this.cache = {};
+    this.touch = on; this.useKey = on ? 'USE' : input.label('use'); this.runKey = on ? 'BREATH' : input.label('run'); this.cache = {};
     $('m-needs').textContent = on ? 'Touch controls are on: left thumb moves, right thumb looks. Hold the phone sideways. No sound on an iPhone? Check the silent switch.' : 'Keyboard and mouse, or a phone or tablet held sideways.';
     // on a phone the bottom corners belong to the thumbs, so the seen and breath bars move up under the objective
     const bl = $('h-bl'), home = on ? $('h-tl') : $('hud'); if (bl.parentElement !== home) home.appendChild(bl);
@@ -95,7 +96,7 @@ export class Hud {
   notice(text) { const n = $('notice'); n.textContent = text; n.hidden = false; this.noticeT = 5; }
   banner(text, secs = 4, kind = '') { const b = $('h-banner'); b.textContent = text; b.className = 'on ' + kind; this.bannerT = secs; }
   log(name, role, text) { const l = $('h-log'); l.querySelector('b').textContent = `${name} · ${role}`; l.querySelector('span').textContent = '"' + text + '"'; l.classList.add('on'); this.logT = 8; }
-  feed(text, kind) { const f = $('h-feed'), d = document.createElement('div'); d.textContent = text; if (kind) d.className = kind; f.appendChild(d); while (f.children.length > 5) f.removeChild(f.firstChild); setTimeout(() => d.remove(), 6200); }
+  feed(text, kind, secs = 6) { const f = $('h-feed'), d = document.createElement('div'); d.textContent = text; if (kind) d.className = kind; d.style.animationDuration = secs + 's'; f.appendChild(d); while (f.children.length > 6) f.removeChild(f.firstChild); setTimeout(() => d.remove(), secs * 1000 + 200); }
 
   // v: everything the read-outs need this frame
   update(dt, v) {
@@ -111,13 +112,13 @@ export class Hud {
     if (v.room && v.room !== this.roomName) { this.roomName = v.room; this.roomT = 3.5; this.text('h-room', v.room); }
     if (this.roomT > 0) this.roomT -= dt; this.cls('h-room', 'on', this.roomT > 0);
     this.cls('h-prompt', 'on', !!v.prompt); this.cls('h-prompt', 'dead', !!(v.prompt && v.prompt.dead));
-    if (v.prompt) this.set('h-prompt', 'html', v.prompt.text + '|' + v.prompt.dead, e => (e.innerHTML = (v.prompt.dead ? '' : '<kbd>' + esc(this.useKey) + '</kbd>') + esc(v.prompt.text)));
+    if (v.prompt) { const more = v.prompt.kind === 'unhide' ? ' · hold ' + this.runKey + ' to hold your breath' : ''; this.set('h-prompt', 'html', v.prompt.text + '|' + v.prompt.dead + more, e => (e.innerHTML = (v.prompt.dead ? '' : '<kbd>' + esc(this.useKey) + '</kbd>') + esc(v.prompt.text + more))); }
     this.cls('h-hold', 'on', v.hold > 0); $('h-hold').firstElementChild.style.width = Math.round(v.hold * 100) + '%';
     this.show('h-cross', !v.map && !v.hidden);
     $('h-seen').querySelector('i').style.width = Math.round(Math.min(1, v.seen) * 100) + '%'; this.cls('h-seen', 'hot', v.seen >= 1);
-    $('h-stam').firstElementChild.style.width = Math.round(v.stamina * 100) + '%'; this.cls('h-stam', 'spent', v.spent);
+    $('h-stam').firstElementChild.style.width = Math.round(v.stamina * 100) + '%'; this.cls('h-stam', 'spent', v.spent); this.cls('h-stam', 'breath', v.hidden);
     this.text('h-lamp', v.lamp ? 'Lamp ON' : 'Lamp off'); this.cls('h-lamp', 'on', v.lamp);
-    this.text('h-stance', v.hidden ? 'Hidden' : v.crouch ? 'Crouched' : 'Standing'); this.text('h-snd', 'Sounders ' + v.sounders);
+    this.text('h-stance', v.hidden ? (v.holding ? 'Holding your breath' : 'Hidden') : v.crouch ? 'Crouched' : 'Standing'); this.text('h-snd', 'Sounders ' + v.sounders);
     this.show('h-scan', v.scan !== null); if (v.scan !== null) { $('h-arrow').style.transform = `rotate(${v.scan.angle}rad)`; this.text('h-dist', v.scan.label); }
     this.show('h-down', !!v.down); if (v.down) { $('h-down').querySelector('b').textContent = v.down.title; $('h-down').querySelector('span').textContent = v.down.text; $('h-down').querySelector('i').style.width = Math.round(v.down.frac * 100) + '%'; $('h-down').querySelector('em').style.visibility = v.down.frac >= 0 ? 'visible' : 'hidden'; }
     // markers for crew who are down, pinned to the edge of the screen when they are off it
@@ -138,6 +139,7 @@ export class Hud {
       }
       x.fillStyle = '#7fe3d4'; for (const d of L.doors) for (const i of d.cells) x.fillRect((i % W) * s + s * 0.2, ((i / W) | 0) * s + s * 0.2, s * 0.6, s * 0.6);
       x.fillStyle = '#4f7f86'; for (const k of L.lockers) x.fillRect(k.cx * s + s * 0.25, k.cz * s + s * 0.25, s * 0.5, s * 0.5);
+      x.fillStyle = '#ffc24a'; for (const b of L.breakers) { const px = (b.cx + 0.5 + b.dx * 0.42) * s, py = (b.cz + 0.5 + b.dz * 0.42) * s; x.beginPath(); x.moveTo(px, py - s * 0.42); x.lineTo(px + s * 0.42, py); x.lineTo(px, py + s * 0.42); x.lineTo(px - s * 0.42, py); x.closePath(); x.fill(); }
       x.font = '600 11px "Segoe UI", Arial, sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle'; const done = new Set();
       for (const r of L.rooms) { if (r.kind !== 'room' || done.has(r.name) || r.x1 - r.x0 < 2) continue; done.add(r.name); const label = r.name.startsWith('Cabin ') ? r.name.slice(6) : r.name.toUpperCase(), px = (r.x0 + r.x1 + 1) / 2 * s, py = (r.z0 + r.z1 + 1) / 2 * s; x.fillStyle = 'rgba(0,0,0,0.55)'; const w = x.measureText(label).width + 6; x.fillRect(px - w / 2, py - 7, w, 14); x.fillStyle = '#cfe0e2'; x.fillText(label, px, py); }
     }
@@ -152,7 +154,7 @@ export class Hud {
     if (v.sealed) { for (const id of v.sealed) for (const i of L.doors[id].cells) { const x = (i % W) * s, y = ((i / W) | 0) * s; ctx.fillStyle = '#ff4630'; ctx.fillRect(x + s * 0.08, y + s * 0.08, s * 0.84, s * 0.84); ctx.strokeStyle = '#2a0703'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x + s * 0.2, y + s * 0.2); ctx.lineTo(x + s * 0.8, y + s * 0.8); ctx.moveTo(x + s * 0.8, y + s * 0.2); ctx.lineTo(x + s * 0.2, y + s * 0.8); ctx.stroke(); } }
     for (const p of v.mapPlayers) { ctx.fillStyle = SLOT_COLORS[p.slot % SLOT_COLORS.length]; ctx.globalAlpha = p.status === ST.ALIVE ? 1 : 0.5; ctx.beginPath(); ctx.arc(p.x / T * s, p.z / T * s, p.me ? 5 : 4, 0, 7); ctx.fill(); if (p.me) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(p.x / T * s, p.z / T * s); ctx.lineTo(p.x / T * s - Math.sin(p.yaw) * 11, p.z / T * s - Math.cos(p.yaw) * 11); ctx.stroke(); } }
     ctx.globalAlpha = 1; ctx.setTransform(1, 0, 0, 1, 0, 0);
-    const marks = (v.sealed && v.sealed.length ? ' Red: sealed doors.' : '') + (v.dark && Array.from(v.dark).some(p => p < 0.5) ? ' Shaded: no power.' : '');
+    const marks = (v.sealed && v.sealed.length ? ' Red: sealed doors.' : '') + (v.dark && Array.from(v.dark).some(p => p < 0.5) ? ' Shaded: no power.' : '') + ' Yellow: breakers.';
     this.set('h-mapnote', 't', (zoom > 1 ? 'The part of the outpost around you. You are the bright dot; the creature is not shown.' : 'You are the bright dot. The schematic does not show the creature.') + marks, (e, t) => (e.textContent = t));
   }
 }

@@ -34,6 +34,8 @@ export const CREW_LOGS = [
   ['N. Petrov', 'Engineering', 'A lamp makes you easy to find. Switch yours off when you hear the tapping.'],
   ['H. Nakamura', 'Drill control', 'When one of us goes down it does not always finish the job. It watches to see who comes.'],
   ['T. Halvorsen', 'Station chief', 'Quarantine lock is on the lift. Eight tags will override it. I am sorry.'],
+  ['P. Osei', 'Stores', 'It stood outside my locker and listened. I held my breath until my ears rang, and it moved on.'],
+  ['L. Ferreira', 'Electrical', 'Every wing has its own breaker. Throw it and you get light for a minute or so. It hears the breaker, mind.'],
 ];
 
 export function buildLevel() {
@@ -42,7 +44,7 @@ export function buildLevel() {
   const ice = new Uint8Array(W * H);
   const roomId = new Int16Array(W * H).fill(-1);
   const propKind = new Array(W * H).fill('');
-  const rooms = [], doors = [], lockers = [], lights = [], tagSpots = [], itemSpots = [], spawns = [], creatureSpawns = [];
+  const rooms = [], doors = [], lockers = [], lights = [], tagSpots = [], itemSpots = [], spawns = [], creatureSpawns = [], breakers = [];
   const idx = (x, z) => z * W + x;
 
   function R(name, x0, z0, x1, z1, o = {}) {
@@ -70,6 +72,8 @@ export function buildLevel() {
     x: (x + 0.5) * T, z: (z + 0.5) * T, y: o.y !== undefined ? o.y : -1,      // y -1: hang it just under the ceiling
     r: LIGHT[col][0], g: LIGHT[col][1], b: LIGHT[col][2], I, flicker: o.flicker ? 1 : 0, kind: o.kind || 'ceil', cx: x, cz: z,
   });
+  // a breaker box on the wall beside a floor tile: d says which side the wall is on
+  const breaker = (x, z, d) => breakers.push({ cx: x, cz: z, dir: d, dx: DIRS[d][0], dz: DIRS[d][1], x: (x + 0.5 + DIRS[d][0] * 0.5) * T, z: (z + 0.5 + DIRS[d][1] * 0.5) * T, ax: (x + 0.5) * T, az: (z + 0.5) * T });
   const tag = (x, z) => tagSpots.push({ cx: x, cz: z });
   const item = (x, z) => itemSpots.push({ cx: x, cz: z });
 
@@ -259,6 +263,9 @@ export function buildLevel() {
   low(3, 13, 3, 13, 'ice'); low(1, 25, 1, 25, 'ice'); low(3, 36, 3, 36, 'ice'); tag(1, 22); item(2, 29);
   light(2, 15, 'white', 1.1, { y: 0.6, kind: 'lamp' }); light(2, 34, 'white', 1.1, { y: 0.6, kind: 'lamp' });
 
+  // one breaker to each power circuit, in the order of ZONES: dock, borehole, mess, hydroponics, generator hall
+  breaker(17, 22, 'E'); breaker(37, 19, 'N'); breaker(28, 40, 'N'); breaker(31, 9, 'S'); breaker(52, 33, 'N');
+
   // ------------------------------------------------------------------ derived tables
   const doorAt = new Int16Array(W * H).fill(-1);
   for (const d of doors) {
@@ -298,9 +305,17 @@ export function buildLevel() {
   { const q = []; for (let i = 0; i < W * H; i++) if (roomId[i] >= 0) { zoneOf[i] = rooms[roomId[i]].zone; q.push(i); }
     for (let h = 0; h < q.length; h++) { const c = q[h], x = c % W, z = (c / W) | 0; for (const [dx, dz] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) { const nx = x + dx, nz = z + dz; if (nx < 0 || nz < 0 || nx >= W || nz >= H) continue; const n = idx(nx, nz); if (zoneOf[n] === 255) { zoneOf[n] = zoneOf[c]; q.push(n); } } } }
   for (const l of lights) l.zone = zoneOf[idx(l.cx, l.cz)];
+  breakers.forEach((b, i) => { b.id = i; b.zone = zoneOf[idx(b.cx, b.cz)]; });
+  // Emergency lamps: small red ones low on the walls every few metres, on their own batteries. They are always there,
+  // but they only show once a wing has lost its power. They do not count as light for anything's eyes.
+  const elights = [];
+  for (let z = 1; z < H - 1; z++) for (let x = 1; x < W - 1; x++) {
+    const i = idx(x, z); if (cells[i] !== C.FLOOR || doorAt[i] >= 0 || ice[i] || (x * 7 + z * 13) % 5 !== 0) continue;
+    for (const [dx, dz] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) if (cells[idx(x + dx, z + dz)] === C.SOLID) { elights.push({ x: (x + 0.5 + dx * 0.47) * T, y: 0.34, z: (z + 0.5 + dz * 0.47) * T, dx, dz, zone: zoneOf[i] }); break; }
+  }
 
   const L = {
-    T, W, H, cells, ceil, ice, roomId, rooms, propKind, doors, doorAt, lockers, lockerAt, ducts, ductOf, lights, tagSpots, itemSpots, spawns, creatureSpawns, lift, zoneOf,
+    T, W, H, cells, ceil, ice, roomId, rooms, propKind, doors, doorAt, lockers, lockerAt, ducts, ductOf, lights, tagSpots, itemSpots, spawns, creatureSpawns, lift, zoneOf, breakers, elights,
     idx, cellOf: (x, z) => (Math.floor(z / T) * W + Math.floor(x / T)),
     cx: i => (i % W + 0.5) * T, cz: i => (((i / W) | 0) + 0.5) * T,
   };
@@ -358,9 +373,10 @@ export function staticClear(L, x0, z0, x1, z1) {
 }
 
 // Light arriving at a point with a given facing. Returns [r, g, b, flickerR, flickerG, flickerB, then how much comes from each of
-// the five power circuits]: steady light, the share from failing fixtures, and what would be lost if a circuit went down.
+// the five power circuits, then the emergency lamps: how much red they give here, and which circuit's they are]: steady light,
+// the share from failing fixtures, what would be lost if a circuit went down, and what would show instead.
 export function lightAt(L, x, y, z, nx, ny, nz) {
-  const out = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  const out = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   const px = x + nx * 0.06, pz = z + nz * 0.06;
   for (const l of L.lights) {
     const dx = l.x - px, dy = l.y - y, dz = l.z - pz, d2 = dx * dx + dy * dy + dz * dz;
@@ -372,6 +388,15 @@ export function lightAt(L, x, y, z, nx, ny, nz) {
     const o = l.flicker ? 3 : 0;
     out[o] += e * l.r; out[o + 1] += e * l.g; out[o + 2] += e * l.b;
     out[6 + l.zone] += e * (0.3 * l.r + 0.6 * l.g + 0.1 * l.b);
+  }
+  let best = 0;
+  for (const l of L.elights) {
+    const dx = l.x - px, dy = l.y - y, dz = l.z - pz, d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 > 90) continue;
+    const d = Math.sqrt(d2) || 1e-3;
+    if (!staticClear(L, px, pz, l.x - l.dx * 0.2, l.z - l.dz * 0.2)) continue;
+    const e = 1.25 * (0.34 + 0.66 * Math.max(0, (nx * dx + ny * dy + nz * dz) / d)) / (1 + 0.2 * Math.max(d2, 0.25));
+    out[11] += e; if (e > best) { best = e; out[12] = l.zone; }
   }
   return out;
 }
@@ -400,6 +425,12 @@ export function validateLevel(L) {
     if (!open(a) || !open(b)) bad.push(`door at ${x},${z} does not lead anywhere`);
   }
   for (const g of ducts) if (g.exits.length < 2) bad.push(`duct ${g.id} has ${g.exits.length} exit(s)`);
+  if (L.breakers.length !== ZONES.length) bad.push('there should be one breaker to each circuit');
+  L.breakers.forEach((b, i) => {
+    if (b.zone !== i) bad.push(`breaker ${i} is on the ${ZONES[b.zone]} circuit`);
+    if (cells[L.idx(b.cx, b.cz)] !== C.FLOOR || !seenC[L.idx(b.cx, b.cz)]) bad.push(`breaker ${i} cannot be reached`);
+    if (cells[L.idx(b.cx + b.dx, b.cz + b.dz)] !== C.SOLID) bad.push(`breaker ${i} is not on a wall`);
+  });
   if (tagSpots.length < 12) bad.push('too few tag spots');
   return bad;
 }

@@ -50,13 +50,26 @@ const res = await g.page.evaluate(async () => {
     'a locker struck from inside at 2 m': s => s.thump(2, 0),
     'a tube going overhead': s => s.pop(1.5, 0),
     'a figure vanishing': s => s.vanish(),
+    'its neck cracking at 3 m': s => s.crack(3, 0, false),
+    'its neck cracking at 12 m': s => s.crack(12, 0, false),
+    'it breathes, 5 m away': s => s.voice('breath', 5, 0, false),
+    'it breathes, 14 m away': s => s.voice('breath', 14, 0, false),
+    'it snarls, 6 m away': s => s.voice('snarl', 6, 0, false),
+    'it snarls, 15 m away, wall between': s => s.voice('snarl', 15, 0, true),
+    'you could not hold your breath': s => s.gasp(),
+    'a breaker thrown in front of you': s => s.breaker(1, 0, false),
+    'a breaker thrown 40 m away, walls between': s => s.breaker(40, 0, true),
+    'a conduit arcing at 4 m': s => s.spark(4, 0, false),
+    'a conduit arcing at 20 m': s => s.spark(20, 0, false),
+    'your own breathing, shut in a locker': s => s.update(0.05, { static: 0, danger: 0, winded: 0, gen: 0, hiding: true, holding: false }),
+    'holding your breath, it is at the door': s => { s.update(0.05, { static: 0.6, danger: 0.9, winded: 0, gen: 0, hiding: true, holding: true }); if (!s._once) { s._once = 1; s.tick(1.5, 0, 2, false); } },
   };
   const out = {};
   for (const [name, fn] of Object.entries(cases)) {
     const secs = 2.5, ctx = new OfflineAudioContext(2, 44100 * secs, 44100), s = new __los.Sound(); s.vol = 0.8; s.start(ctx, name !== 'room tone only');
     s.listener(0, 1.6, 0, 1, 0, 0);
     // play it a few times, spaced out, part-way into the render
-    let err = null; const times = /footfall|footstep/.test(name) ? [0.3, 0.6, 0.9, 1.2, 1.5] : /static|out of breath|generators|tension/.test(name) ? Array.from({ length: 46 }, (_, i) => 0.1 + i * 0.05) : [0.3];
+    let err = null; const times = /footfall|footstep/.test(name) ? [0.3, 0.6, 0.9, 1.2, 1.5] : /static|out of breath|generators|tension|locker$|at the door$/.test(name) ? Array.from({ length: 46 }, (_, i) => 0.1 + i * 0.05) : [0.3];
     for (const t of times) ctx.suspend(t).then(() => { try { fn(s); } catch (e) { err = e; } ctx.resume(); });
     const buf = await ctx.startRendering(); if (err) { out[name] = 'ERROR ' + err.message; continue; }
     let peak = 0, sum = 0, n = 0;

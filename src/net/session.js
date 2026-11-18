@@ -22,7 +22,7 @@ export class Replica {
     this.doorWant = new Uint8Array(nd); this.doorJam = new Uint8Array(nd); this.doorOpen = new Float32Array(nd);
     this.lift = { state: 0, timer: 0, board: 0 };
     this.decoys = new Map(); this.players = new Map(); this.me = null;
-    this.creature = { has: false, x: 0, z: 0, yaw: 0, state: 0, tgt: -1, lampsOut: false, forcing: false, speed: 0, aux: -1 };
+    this.creature = { has: false, x: 0, z: 0, yaw: 0, state: 0, tgt: -1, lampsOut: false, forcing: false, rear: false, speed: 0, aux: -1 };
     this.cbuf = []; this.lastEv = 0; this.result = null; this.fresh = true; this.snapT = 0; this.ai = [15, 100, 45];
     this.zoneOff = 0;          // circuits that have tripped, one bit each; bit 5 is a blackout
   }
@@ -56,7 +56,7 @@ export class Replica {
     const t = now - delay; let i = b.length - 1; while (i > 0 && b[i - 1].t > t) i--;
     const hi = b[i], lo = b[Math.max(0, i - 1)], f = hi.t > lo.t ? Math.min(1, Math.max(0, (t - lo.t) / (hi.t - lo.t))) : 1;
     c.x = lerp(lo.x, hi.x, f); c.z = lerp(lo.z, hi.z, f); c.yaw = lerpAngle(lo.yaw, hi.yaw, f);
-    const s = f > 0.5 ? hi : lo; c.state = s.state; c.tgt = s.tgt; c.lampsOut = !!(s.fl & 1); c.forcing = !!(s.fl & 2); c.speed = s.speed; c.aux = s.aux;
+    const s = f > 0.5 ? hi : lo; c.state = s.state; c.tgt = s.tgt; c.lampsOut = !!(s.fl & 1); c.forcing = !!(s.fl & 2); c.rear = !!(s.fl & 4); c.speed = s.speed; c.aux = s.aux;
   }
 }
 

@@ -16,7 +16,7 @@ import { ST, CS, LIFT } from './defs.js';
 
 const N = W * H;
 const EYE = CFG.creature.eye;
-const KIND_W = { run: 1.0, walk: 0.7, crouch: 0.45, door: 0.8, locker: 0.9, tag: 0.9, scan: 0.85, decoy: 1.25, thrower: 1.0, revive: 1.1, klaxon: 0.9 };
+const KIND_W = { run: 1.0, walk: 0.7, crouch: 0.45, door: 0.8, locker: 0.9, tag: 0.9, scan: 0.85, decoy: 1.25, thrower: 1.0, revive: 1.1, klaxon: 0.9, breath: 0.75, gasp: 1.2, breaker: 1.1 };
 const NONE = [];
 
 export class Creature {
@@ -60,6 +60,7 @@ export class Creature {
     this.lockerId = -1; this.lockerT = 0; this.lockerBack = CS.ROAM;
     this.lampsOut = false; this.forcing = false; this.doorT = 0;
     this.baitT = 0; this.baitFor = null; this.ambushT = 0;
+    this.rearT = 0; this.burstT = 0; this.heardLocker = -1;      // rearing up before a charge; the first rush of that charge; a locker it has heard breathing from
     this.pressure = 0; this.backoff = 0; this.quiet = 0; this.hint = null; this.klaxT = 0;
     this.aware.clear(); this.seenAt.clear(); this.decoyCall.clear(); this.poiSeen.fill(-60); this.heat.fill(0);
     this.learn.hide = this.tr.hide0; this.learn.decoy = 1; this.learn.duct = 0.45;
@@ -161,6 +162,7 @@ export class Creature {
       if (!call) { x = n.ox + ((n.id * 7919) % 9) - 4; z = n.oz + ((n.id * 104729) % 9) - 4; kind = 'thrower'; }   // it has worked out what a sounder means
     }
     const weight = loud * (KIND_W[kind] || 0.7);
+    if (n.locker >= 0) { this.lockerOcc[n.locker] += 0.7 * loud + 0.2; this.heardLocker = n.locker; }      // someone breathing behind a locker door: it knows which door
     const err = 0.3 + 3 * (1 - loud);
     x = clamp(x + (w.rand() * 2 - 1) * err, T, (W - 1) * T); z = clamp(z + (w.rand() * 2 - 1) * err, T, (H - 1) * T);
     const room = L.roomId[L.cellOf(x, z)]; if (room >= 0) this.heat[room] += weight;
@@ -277,6 +279,10 @@ export class Creature {
   investStep(dt) {
     const w = this.w, s = this.stim;
     if (this.path) { if (this.follow(dt, 2.6 + 1.6 * s.w + 0.6 * this.aggr(), 5)) { this.pauseT = 1.6; this.lookT = 0; this.baseYaw = this.yaw; } return; }
+    if ((s.kind === 'breath' || s.kind === 'gasp') && this.heardLocker >= 0 && !this.lockerChecked[this.heardLocker]) {      // it came to a locker it heard someone in: open it
+      const k = this.heardLocker, lk = this.L.lockers[k]; this.heardLocker = -1;
+      if (Math.hypot(lk.x - this.x, lk.z - this.z) < 2.2) { this.searchLeft = Math.max(this.searchLeft, 8); return this.enterLocker(k, CS.SEARCH); }
+    }
     if (this.pauseT > 0) return this.lookAbout(dt);
     if (s.kind === 'decoy') this.learn.decoy = Math.max(0.15, this.learn.decoy * 0.6);     // nothing here but a noise-maker: remember that
     this.startSearch({ x: s.x, z: s.z }, 0.7, 9 + 6 * this.aggr(), null);
@@ -285,7 +291,11 @@ export class Creature {
   // ------------------------------------------------------------------------------------------------ the hunt
   startHunt(p) {
     const w = this.w;
-    if (this.state !== CS.HUNT) { w.event('spot', p.slot); this.stats.hunts++; this.pressure += 8; }
+    if (this.state !== CS.HUNT) {
+      w.event('spot', p.slot); this.stats.hunts++; this.pressure += 8;
+      // seen from a distance it rears up for a moment, then comes in a rush. From close to, there is no warning.
+      if (this.state !== CS.ATTACK && Math.hypot(p.x - this.x, p.z - this.z) > 7) { this.rearT = 0.5; this.burstT = 2.1; }
+    }
     this.target = p.id; this.lostT = 0; this.knowsLocker = -1; this.replanT = 0; this.path = null;
     this.last = { x: p.x, z: p.z, vx: p.vx, vz: p.vz };
     const room = this.L.roomId[this.L.cellOf(p.x, p.z)]; if (room >= 0) this.heat[room] += 2;
@@ -305,7 +315,9 @@ export class Creature {
     else { this.lostT += dt; if (p.hidden < 0 && this.lostT < 0.9) this.last = { x: p.x, z: p.z, vx: p.vx, vz: p.vz }; }   // for a moment it still knows which way they went
     const o = this.visibleOther(p.id);
     if (o && (!p.visible || Math.hypot(o.x - this.x, o.z - this.z) < d * 0.6)) return this.startHunt(o);
-    const speed = CFG.creature.chase + this.tr.chase + CFG.creature.chaseGain * Math.min(1, this.aggr()) + (w.lift.state >= LIFT.CALLED ? 0.3 : 0);
+    if (this.burstT > 0) this.burstT -= dt;
+    const speed = CFG.creature.chase + this.tr.chase + CFG.creature.chaseGain * Math.min(1, this.aggr()) + (w.lift.state >= LIFT.CALLED ? 0.3 : 0) + (this.burstT > 0 ? 0.9 : 0);
+    if (this.rearT > 0) { this.rearT -= dt; this.stop(dt); this.yaw = angleTo(this.yaw, yawOf(this.last.x - this.x, this.last.z - this.z), 6 * dt); return; }
 
     if (this.knowsLocker >= 0) {
       const lk = L.lockers[this.knowsLocker];
@@ -398,6 +410,9 @@ export class Creature {
     if (this.lockerT < 1.25) return;
     this.lockerChecked[k] = 1; this.lockerOcc[k] = 0;
     let found = null; for (const p of w.players.values()) if (p.status === ST.ALIVE && p.hidden === k) found = p;
+    // Someone holding their breath is not a sure find, unless it watched them get in. How often it finds them anyway is
+    // one of the things it learns.
+    if (found && this.lockerBack !== CS.HUNT && w.holding(found) && w.rand() > this.learn.hide) { this.learn.hide = Math.min(0.9, this.learn.hide + 0.06); w.event('lockchk', k, 2); found = null; }
     if (found) { this.stats.lockerFinds++; this.stats.catches++; w.event('lockchk', k, 1); w.downPlayer(found); this.learn.hide = Math.min(0.9, this.learn.hide + 0.1); this.attackT = 0; return this.afterKill(found); }
     if (this.lockerBack === CS.HUNT) { this.knowsLocker = -1; return this.startSearch({ x: this.x, z: this.z }, 0.8, this.searchDur(), this.target); }
     if (this.searchLeft > 0) return this.enter(CS.SEARCH);

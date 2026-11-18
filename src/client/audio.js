@@ -3,7 +3,7 @@
 import { clamp, clamp01 } from '../util.js';
 
 export class Sound {
-  constructor() { this.ctx = null; this.cheap = false; this.vol = 0.8; this.t = 0; this.beatT = 0; this.breathT = 0; this.staticLevel = 0; }
+  constructor() { this.ctx = null; this.cheap = false; this.vol = 0.8; this.t = 0; this.beatT = 0; this.breathT = 0; this.hideT = 1; this.staticLevel = 0; }
   // ctx: only the loudness check passes one in (an offline context it can measure)
   start(given, bare) {
     if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
@@ -11,7 +11,9 @@ export class Sound {
     const ctx = this.ctx = given || new AC();
     this.master = ctx.createGain(); this.master.gain.value = this.vol;
     const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -16; comp.knee.value = 18; comp.ratio.value = 5; comp.attack.value = 0.004; comp.release.value = 0.2;
-    this.master.connect(comp).connect(ctx.destination);
+    // everything goes through one filter that closes down while you hold your breath: the world goes dull and far away
+    this.muff = ctx.createBiquadFilter(); this.muff.type = 'lowpass'; this.muff.frequency.value = 20000; this.muff.Q.value = 0.5;
+    this.master.connect(this.muff).connect(comp).connect(ctx.destination);
     // noise to cut sounds out of
     const mk = (secs, brown) => { const b = ctx.createBuffer(1, ctx.sampleRate * secs, ctx.sampleRate), d = b.getChannelData(0); let last = 0; for (let i = 0; i < d.length; i++) { const w = Math.random() * 2 - 1; if (brown) { last = (last + 0.02 * w) / 1.02; d[i] = last * 3.5; } else d[i] = w; } return b; };
     this.white = mk(2, false); this.brown = mk(4, true);
@@ -65,6 +67,7 @@ export class Sound {
   ui() { if (this.ctx) this.tone('sine', 980, 980, 0.04, 0.08); }
   lamp(on) { if (this.ctx) { this.burst(0.025, 0.2, 'highpass', 2500, 2500, 0.7); this.tone('square', on ? 1700 : 1100, on ? 1700 : 1100, 0.03, 0.03); } }
   pickupTag() { if (!this.ctx) return; const t = this.now; this.tone('sine', 880, 880, 0.12, 0.16, null, t); this.tone('sine', 1320, 1320, 0.2, 0.16, null, t + 0.1); for (let i = 0; i < 7; i++) this.tone('square', 1500 + Math.random() * 2600, 1500, 0.03, 0.025, null, t + 0.32 + i * 0.045); }
+  gasp() { if (!this.ctx) return; const t = this.now; this.burst(0.4, 0.6, 'bandpass', 600, 1900, 1.1, null, t, null, 0.03); this.burst(0.7, 0.4, 'bandpass', 1300, 520, 1.2, null, t + 0.45, null, 0.12); }
   pickupItem() { if (!this.ctx) return; this.burst(0.03, 0.2, 'bandpass', 1800, 1800, 2); this.tone('sine', 620, 760, 0.1, 0.12); }
   throwSound() { if (this.ctx) this.burst(0.22, 0.14, 'bandpass', 500, 1600, 1.2); }
   scanPing(aimed) { if (!this.ctx) return; const f = 1150 + aimed * 900, t = this.now; this.tone('sine', f, f, 0.09, 0.1, null, t); this.tone('sine', f, f, 0.12, 0.03, null, t + 0.13); }
@@ -138,6 +141,12 @@ export class Sound {
   // ---- the outpost failing
   powerDown(near = 1) { if (!this.ctx) return; const t = this.now, g = 0.25 + 0.75 * near; this.burst(0.03, 0.8 * g, 'bandpass', 1300, 1300, 3, null, t, null, 0.001); this.tone('sine', 150, 26, 1.4, 0.55 * g, null, t + 0.02, 0.01); this.tone('sawtooth', 100, 22, 1.2, 0.1 * g, null, t + 0.02, 0.01); this.burst(1.3, 0.25 * g, 'lowpass', 700, 50, 0.7, null, t, this.brown, 0.02); }
   powerUp(near = 1) { if (!this.ctx) return; const t = this.now, g = 0.25 + 0.75 * near; this.burst(0.03, 0.7 * g, 'bandpass', 1500, 1500, 3, null, t, null, 0.001); this.tone('sine', 34, 104, 0.9, 0.3 * g, null, t + 0.05, 0.3); this.tone('sine', 208, 208, 0.5, 0.06 * g, null, t + 0.5, 0.2); }
+  // a breaker going over: a heavy clunk, and the hum of whatever it feeds coming up behind it
+  breaker(x, z, muffled) { if (!this.ctx) return; const d = this.at(x, z, 1.4, 5, muffled, 120), t = this.now; this.tone('sine', 96, 38, 0.32, 1.3, d, t, 0.002); this.burst(0.05, 1.0, 'bandpass', 850, 400, 1.5, d, t, null, 0.001); this.burst(0.03, 0.6, 'highpass', 3000, 3000, 0.7, d, t + 0.02, null, 0.001); this.tone('sawtooth', 48, 100, 0.9, 0.22, d, t + 0.1, 0.4); }
+  // a broken conduit arcing
+  spark(x, z, muffled) { if (!this.ctx) return; const d = this.at(x, z, 2.5, 3, muffled), t = this.now, n = 3 + Math.floor(Math.random() * 5); for (let i = 0; i < n; i++) { const tt = t + Math.random() * 0.22; this.burst(0.012, 0.8, 'highpass', 4800, 3000, 0.7, d, tt, null, 0.001); this.tone('square', 90 + Math.random() * 60, 60, 0.03, 0.25, d, tt, 0.001); } }
+  // its neck, cracking round to a new angle: a few dry clicks close together and a little knock under them
+  crack(x, z, muffled) { if (!this.ctx) return; const d = this.at(x, z, 2.4, 2.2, muffled), t = this.now, n = 2 + Math.floor(Math.random() * 3); for (let i = 0; i < n; i++) this.burst(0.007, 0.95 - i * 0.12, 'bandpass', 2600 + Math.random() * 1600, 1800, 1.4, d, t + i * (0.018 + Math.random() * 0.022), null, 0.0005); this.tone('sine', 170, 80, 0.06, 0.5, d, t, 0.001); }
   fault(x, z, muffled) { if (!this.ctx) return; const d = this.at(x, z, 2.2, 3.5, muffled), t = this.now; this.tone('square', 58, 58, 0.4, 0.35, d, t, 0.005); for (let i = 0; i < 5; i++) this.burst(0.015, 0.6, 'highpass', 3000, 3000, 0.7, d, t + Math.random() * 0.4, null, 0.001); }
   quake(secs = 6.5) {
     if (!this.ctx) return; const t = this.now;
@@ -168,13 +177,23 @@ export class Sound {
         const v = c.createOscillator(), vg = c.createGain(); v.frequency.value = 31; vg.gain.value = 60; v.connect(vg).connect(o.frequency);
         g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.5, t + 0.04); g.gain.setValueAtTime(0.5, t + 0.75); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.2); o.connect(g).connect(sh); o.start(t); v.start(t); o.stop(t + 1.25); v.stop(t + 1.25); }
       this.burst(1.1, 0.7, 'bandpass', 3200, 1500, 1.2, d, t);
+      this.tone('sawtooth', 104, 62, 1.15, 0.55, sh, t, 0.02); this.tone('sawtooth', 157, 90, 1.0, 0.3, sh, t, 0.02);          // and something much lower underneath it
     }
     else if (kind === 'hiss') { const d = this.at(x, z, 2.2, 4, muffled); this.burst(0.9, 0.6, 'highpass', 2600, 4200, 0.7, d, t, null, 0.08); }
     else if (kind === 'rattle') { const d = this.at(x, z, 2.2, 3, muffled); for (let i = 0; i < 6; i++) { const f = 760 + Math.random() * 240; this.burst(0.025, 0.3, 'bandpass', f, f, 8, d, t + i * 0.11, null, 0.002); } }
+    else if (kind === 'breath') {       // close enough to hear it breathe: a long wet draw, then a rattle
+      const d = this.at(x, z, 2.0, 2.4, muffled); this.burst(0.6, 0.95, 'bandpass', 240, 430, 2.2, d, t, this.brown, 0.28); this.burst(0.5, 0.34, 'bandpass', 900, 600, 1.4, d, t + 0.05, null, 0.25);
+      for (let i = 0; i < 6; i++) { const f = 400 + Math.random() * 180; this.burst(0.03, 0.62, 'bandpass', f, f * 0.7, 5, d, t + 0.72 + i * 0.065, null, 0.003); }
+    }
+    else if (kind === 'snarl') {       // on a hunt and close: low, in the chest, and it keeps coming
+      const d = this.at(x, z, 1.8, 3.6, muffled), sh = this.ctx.createWaveShaper(), og = this.ctx.createGain(); sh.curve = this.curve; og.gain.value = 0.36; sh.connect(og).connect(d);
+      this.tone('sawtooth', 90, 56, 0.6, 0.6, sh, t, 0.03); this.tone('sawtooth', 134, 82, 0.5, 0.35, sh, t, 0.03); this.burst(0.5, 0.2, 'bandpass', 950, 480, 1.5, d, t, null, 0.04);
+    }
     else if (kind === 'lunge') { const d = this.at(x, z, 1.5, 4, muffled), sh = this.ctx.createWaveShaper(); sh.curve = this.curve; sh.connect(d); this.tone('sawtooth', 900, 140, 0.4, 0.8, sh, t, 0.01); this.burst(0.35, 0.9, 'bandpass', 2400, 500, 1.5, d, t); }
   }
 
-  // ---- layers that follow the state of things. o: { static 0..1, danger 0..1, winded 0..1, gen 0..1 (how close the generators are), tension 0..1 }
+  // ---- layers that follow the state of things. o: { static 0..1, danger 0..1, winded 0..1, gen 0..1 (how close the generators are), tension 0..1,
+  //      hiding: shut in a locker, holding: and holding your breath }
   update(dt, o) {
     if (!this.ctx) return; this.t += dt; const t = this.now;
     this.staticLevel += (o.static - this.staticLevel) * Math.min(1, dt * 5);
@@ -183,6 +202,8 @@ export class Sound {
     this.genGain.gain.setTargetAtTime(o.gen * 0.26, t, 0.3);
     const tn = clamp01(o.tension || 0); this.tenseGain.gain.setTargetAtTime(0.003 + 0.03 * tn + 0.08 * tn * tn, t, 0.7); this.tenseFl.frequency.setTargetAtTime(220 + 1100 * tn * tn, t, 0.7);
     if (o.danger > 0.35) { this.beatT -= dt; if (this.beatT <= 0) { this.beatT = 60 / (72 + 70 * o.danger); const g = 0.14 + 0.3 * o.danger; this.tone('sine', 62, 38, 0.13, g, null, t, 0.01); this.tone('sine', 52, 34, 0.12, g * 0.7, null, t + 0.16, 0.01); } }
+    this.muff.frequency.setTargetAtTime(o.holding ? 620 : 20000, t, o.holding ? 0.1 : 0.05);
+    if (o.hiding && !o.holding) { this.hideT -= dt; if (this.hideT <= 0) { this.hideT = 2.7; this.burst(0.8, 0.075, 'bandpass', 600, 950, 1.3, null, t, null, 0.3); this.burst(1.0, 0.085, 'bandpass', 850, 500, 1.3, null, t + 1.05, null, 0.25); } } else this.hideT = 0.9;      // your own breathing, loud in the dark
     if (o.winded > 0.3) { this.breathT -= dt; if (this.breathT <= 0) { this.breathT = 0.75 - 0.25 * o.winded; const g = 0.05 + 0.1 * o.winded; this.burst(0.3, g, 'bandpass', 900, 1500, 1.4, null, t, null, 0.1); this.burst(0.3, g * 0.8, 'bandpass', 1300, 700, 1.4, null, t + 0.36, null, 0.08); } }
   }
 }

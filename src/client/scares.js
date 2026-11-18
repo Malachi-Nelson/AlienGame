@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { T, C, ZONES } from '../level.js';
 import { sight } from '../nav.js';
 import { PWR } from '../sim/defs.js';
-import { clamp01, yawOf } from '../util.js';
+import { clamp01, yawOf, rng32 } from '../util.js';
 
 // What the suit radio picks up. Whoever is still transmitting has been at it for nineteen days.
 export const RADIO = [
@@ -45,10 +45,11 @@ export class Lights {
   // zones: this match's power per circuit, or null on the menu. mask: circuits that have tripped. near: 0..1, how close the creature is.
   update(dt, zones, mask, near, soft) {
     for (let z = 0; z < this.lv.length; z++) {
-      const off = !!zones && (zones[z] === PWR.DEAD || !!(mask & (1 << z)) || !!(mask & 32)), want = off ? 0.07 : 1;
+      const boost = !!(mask & (64 << z));           // a breaker has been thrown: steady power for a while, whatever the wing was like
+      const off = !!zones && ((zones[z] === PWR.DEAD && !boost) || !!(mask & (1 << z)) || !!(mask & 32)), want = off ? 0.07 : 1;
       if (want !== this.want[z]) { this.want[z] = want; this.stut[z] = want < 1 ? 0.5 : 0.75; }
       let v = want;
-      if (zones && zones[z] === PWR.FAILING && !off) {          // mostly on, with dips and the odd long outage
+      if (zones && zones[z] === PWR.FAILING && !off && !boost) {          // mostly on, with dips and the odd long outage
         this.failT[z] -= dt;
         if (this.failT[z] <= 0) { if (this.failV[z] > 0.8) { const r = Math.random(); this.failV[z] = r < 0.45 && !soft ? 0.1 : 0.45; this.failT[z] = r < 0.07 ? 1 + Math.random() * 1.6 : 0.07 + Math.random() * 0.25; } else { this.failV[z] = 0.88 + Math.random() * 0.12; this.failT[z] = 0.4 + Math.random() * 2.6; } }
         v = this.failV[z];
@@ -174,5 +175,34 @@ export class Scares {
     if (p.stare > 0.9 || d < 8.5) { this.hide(); this.fx.static = 0.6; this.sound.vanish(); return; }       // looked straight at for a moment, or walked up to: gone
     if (p.t > p.life && facing < 0.8) this.hide();                               // or it is simply not there the next time you look
     else if (p.t > p.life + 4) { this.hide(); this.fx.static = 0.35; }
+  }
+}
+
+// Broken conduits that arc now and then: a crackle, a few falling sparks, and for an instant the corridor is lit blue-white.
+// Where they are comes from the match's seed, so everyone has them in the same places.
+export class Sparks {
+  constructor(s3, sound) {
+    this.s3 = s3; this.sound = sound; this.spots = []; this.lit = 0;
+    this.light = new THREE.PointLight(0xbcd6ff, 0, 15, 1.5); s3.scene.add(this.light);
+    this.flash = s3.glowSprite(0xd6e6ff, 0.8); this.flash.visible = false; s3.scene.add(this.flash);
+    this.bits = []; for (let i = 0; i < 9; i++) { const sp = s3.glowSprite(0xffd28a, 0.07); sp.visible = false; s3.scene.add(sp); this.bits.push({ sp, vx: 0, vy: 0, vz: 0, t: 0 }); }
+  }
+  setLayout(layout) {
+    const r = rng32(((layout.seed | 0) ^ 0x77a1) >>> 0), faces = this.s3.wallFaces.filter(f => f.hall), T2 = this.s3.L.T; this.spots = [];
+    const side = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+    for (let n = 0; n < 8 && faces.length; n++) { const f = faces[Math.floor(r() * faces.length)], [dx, dz] = side[f.k]; this.spots.push({ x: (f.cx + 0.5 + dx * 0.44) * T2, y: 2.62, z: (f.cz + 0.5 + dz * 0.44) * T2, nx: -dx, nz: -dz, t: 3 + r() * 14 }); }
+  }
+  // soft: no flash of light, only the sparks themselves
+  update(dt, cam, soft, muffled) {
+    if (this.lit > 0) { this.lit -= dt; if (this.lit <= 0) { this.light.intensity = 0; this.flash.visible = false; } }
+    for (const b of this.bits) { if (b.t <= 0) continue; b.t -= dt; b.vy -= 9 * dt; b.sp.position.x += b.vx * dt; b.sp.position.y += b.vy * dt; b.sp.position.z += b.vz * dt; b.sp.material.opacity = clamp01(b.t * 2.5); if (b.t <= 0 || b.sp.position.y < 0.03) { b.t = 0; b.sp.visible = false; } }
+    for (const s of this.spots) {
+      s.t -= dt; if (s.t > 0) continue;
+      s.t = 4 + Math.random() * 17;
+      if (Math.hypot(s.x - cam.x, s.z - cam.z) > 36) continue;
+      this.flash.position.set(s.x, s.y, s.z); this.flash.visible = true; this.light.position.set(s.x + s.nx * 0.3, s.y - 0.2, s.z + s.nz * 0.3); this.light.intensity = soft ? 0 : 30; this.lit = 0.07;
+      let n = 4 + Math.floor(Math.random() * 5); for (const b of this.bits) { if (b.t > 0 || n-- <= 0) continue; b.t = 0.5 + Math.random() * 0.5; b.sp.visible = true; b.sp.position.set(s.x, s.y, s.z); b.vx = s.nx * (0.5 + Math.random() * 1.6) + (Math.random() - 0.5); b.vz = s.nz * (0.5 + Math.random() * 1.6) + (Math.random() - 0.5); b.vy = Math.random() * 1.6; }
+      this.sound.spark(s.x, s.z, muffled(s.x, s.z));
+    }
   }
 }

@@ -65,6 +65,7 @@
       <button id="m-controls" type="button">Controls</button>
     </div>
     <p class="note"><span id="m-needs">Keyboard and mouse, or a phone or tablet held sideways.</span> Sounds much better with headphones. Everyone who opens this page is in the same public room; a private room gives you a link for just your group. <span id="m-build"></span></p>
+    <p class="note record" id="m-record" hidden></p>
   </div>
 
   <div class="card" data-screen="lobby" hidden>
@@ -96,6 +97,7 @@
     <p class="lede" id="e-text"></p>
     <div class="stats" id="e-stats"></div>
     <div class="extra" id="e-extra" hidden><i></i><b></b><span></span><em></em></div>
+    <p class="note record" id="e-record" hidden></p>
     <div class="row btns"><button id="e-again" type="button" class="primary">Again</button><button id="e-leave" type="button">Main menu</button></div>
   </div>
 
@@ -144,6 +146,15 @@
 </div>
 <div id="rotate" hidden><div><b>Turn your phone sideways</b><span>The game waits until you do.</span></div></div>
 
+<script>
+// If the game's own script dies while it is starting (nearly always: this browser cannot give it WebGL 2), say so instead of leaving a menu that does nothing.
+window.addEventListener('error', function (e) {
+  if (window.__los) return;
+  var n = document.getElementById('notice'), b = document.getElementById('m-solo'); if (!n) return;
+  n.hidden = false; n.textContent = 'The game could not start in this browser. It needs WebGL 2 for the 3D view, and that is switched off or missing here. Try a current Chrome, Edge, Firefox or Safari, and check that hardware acceleration is on.' + (e && e.message ? ' (' + String(e.message).slice(0, 90) + ')' : '');
+  if (b) b.disabled = true;
+});
+</script>
 <script src="mqtt.min.js?v=437" async></script>
 <script src="game.js?v=__V__"></script>
 </body>
