@@ -148,7 +148,7 @@ function frame() {
   const now = performance.now(), raw = (now - last) / 1000, dt = clamp(raw, 0, 0.1); last = now;
   let rep = session.rep; const inGame = session.mode !== 'menu';
   // if this machine cannot keep up, turn the detail down rather than leave the player with a slideshow
-  if (settings.auto && inGame && rep.phase === PH.PLAY && locked && !document.hidden && raw < 0.5) {
+  if (settings.auto && inGame && rep.phase === PH.PLAY && document.pointerLockElement === canvas && !document.hidden && raw < 0.25) {      // only while someone is really playing: a background tab is slow for other reasons
     slowAcc += raw; slowN++;
     if (slowAcc > 5) { if (slowAcc / slowN > 0.031 && settings.q !== 'low') { settings.q = settings.q === 'high' ? 'medium' : 'low'; applyQuality(); hud.setSettings(settings); save(); hud.notice('Detail turned down to keep things smooth. Esc has the setting.'); } slowAcc = 0; slowN = 0; }
   }
@@ -331,8 +331,8 @@ function frame() {
 // A hidden tab stops drawing, but a host must keep the match running for everyone else: a worker's timer is not slowed down.
 try {
   const w = new Worker(URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 50);'], { type: 'text/javascript' })));
-  w.onmessage = () => { if (document.hidden && session.mode !== 'menu') session.tick(performance.now()); };
+  w.onmessage = () => { if (session.mode !== 'menu' && (document.hidden || performance.now() - session.lastT > 90)) session.tick(performance.now()); };     // also covers a visible page whose drawing has been slowed right down
 } catch (e) { /* no workers: the match pauses while the host's tab is hidden */ }
 
-window.__los = { session, player, hud, gfx, sound, L, cam, settings, keys, pressed, build: BUILD };
+window.__los = { session, player, hud, gfx, sound, Sound, L, cam, settings, keys, pressed, build: BUILD };
 requestAnimationFrame(frame);

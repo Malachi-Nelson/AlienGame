@@ -4,10 +4,11 @@ import { clamp, clamp01 } from '../util.js';
 
 export class Sound {
   constructor() { this.ctx = null; this.vol = 0.8; this.t = 0; this.beatT = 0; this.breathT = 0; this.creakT = 6; this.staticLevel = 0; }
-  start() {
+  // ctx: only the loudness check passes one in (an offline context it can measure)
+  start(given, bare) {
     if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
-    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
-    const ctx = this.ctx = new AC();
+    const AC = window.AudioContext || window.webkitAudioContext; if (!AC && !given) return;
+    const ctx = this.ctx = given || new AC();
     this.master = ctx.createGain(); this.master.gain.value = this.vol;
     const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -16; comp.knee.value = 18; comp.ratio.value = 5; comp.attack.value = 0.004; comp.release.value = 0.2;
     this.master.connect(comp).connect(ctx.destination);
@@ -16,8 +17,10 @@ export class Sound {
     this.white = mk(2, false); this.brown = mk(4, true);
     // the room: a low rumble, moving air, two slow drones
     const loop = (buf, type, f, q, gain) => { const s = ctx.createBufferSource(); s.buffer = buf; s.loop = true; const fl = ctx.createBiquadFilter(); fl.type = type; fl.frequency.value = f; fl.Q.value = q; const g = ctx.createGain(); g.gain.value = gain; s.connect(fl).connect(g).connect(this.master); s.start(); return g; };
-    loop(this.brown, 'lowpass', 190, 0.5, 0.5); loop(this.white, 'bandpass', 700, 0.35, 0.012);
-    for (const [f, lf] of [[49, 0.07], [73.4, 0.045], [98.3, 0.11]]) { const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = f; const g = ctx.createGain(); g.gain.value = 0.035; const l = ctx.createOscillator(); l.frequency.value = lf; const lg = ctx.createGain(); lg.gain.value = 0.03; l.connect(lg).connect(g.gain); o.connect(g).connect(this.master); o.start(); l.start(); }
+    if (!bare) {
+      loop(this.brown, 'lowpass', 190, 0.5, 0.055); loop(this.white, 'bandpass', 700, 0.35, 0.006);
+      for (const [f, lf] of [[49, 0.07], [73.4, 0.045], [98.3, 0.11]]) { const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = f; const g = ctx.createGain(); g.gain.value = 0.012; const l = ctx.createOscillator(); l.frequency.value = lf; const lg = ctx.createGain(); lg.gain.value = 0.01; l.connect(lg).connect(g.gain); o.connect(g).connect(this.master); o.start(); l.start(); }
+    }
     this.staticGain = loop(this.white, 'bandpass', 2800, 0.5, 0);
     this.genGain = ctx.createGain(); this.genGain.gain.value = 0; this.genGain.connect(this.master);
     for (const f of [55, 110.4, 164.7]) { const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; const fl = ctx.createBiquadFilter(); fl.type = 'lowpass'; fl.frequency.value = 320; const g = ctx.createGain(); g.gain.value = 0.2; o.connect(fl).connect(g).connect(this.genGain); o.start(); }
@@ -51,7 +54,7 @@ export class Sound {
   }
 
   // ---- you
-  step(kind) { if (!this.ctx) return; const g = kind.crouch ? 0.035 : kind.run ? 0.2 : 0.1; this.burst(0.09, g, 'lowpass', 900 + Math.random() * 500, 180, 0.8); this.tone('sine', 95 + Math.random() * 25, 48, 0.09, g * 1.3); }
+  step(kind) { if (!this.ctx) return; const g = kind.crouch ? 0.03 : kind.run ? 0.18 : 0.075; this.burst(0.09, g, 'lowpass', 900 + Math.random() * 500, 180, 0.8); this.tone('sine', 95 + Math.random() * 25, 48, 0.09, g * 1.3); }
   stepAt(x, z, run, crouch) { if (!this.ctx) return; const d = this.at(x, z, 0.2, 2), g = crouch ? 0.05 : run ? 0.5 : 0.22; this.burst(0.09, g, 'lowpass', 1000, 200, 0.8, d); this.tone('sine', 100, 50, 0.09, g, d); }
   ui() { if (this.ctx) this.tone('sine', 980, 980, 0.04, 0.08); }
   lamp(on) { if (this.ctx) { this.burst(0.025, 0.2, 'highpass', 2500, 2500, 0.7); this.tone('square', on ? 1700 : 1100, on ? 1700 : 1100, 0.03, 0.03); } }
@@ -59,7 +62,7 @@ export class Sound {
   pickupItem() { if (!this.ctx) return; this.burst(0.03, 0.2, 'bandpass', 1800, 1800, 2); this.tone('sine', 620, 760, 0.1, 0.12); }
   throwSound() { if (this.ctx) this.burst(0.22, 0.14, 'bandpass', 500, 1600, 1.2); }
   scanPing(aimed) { if (!this.ctx) return; const f = 1150 + aimed * 900, t = this.now; this.tone('sine', f, f, 0.09, 0.1, null, t); this.tone('sine', f, f, 0.12, 0.03, null, t + 0.13); }
-  downed() { if (!this.ctx) return; const t = this.now; this.tone('sine', 85, 30, 0.7, 0.9, null, t); this.burst(0.3, 0.5, 'lowpass', 1400, 120, 0.7, null, t); this.tone('sine', 3100, 3050, 2.2, 0.035, null, t + 0.1, 0.4); }
+  downed() { if (!this.ctx) return; const t = this.now; this.tone('sine', 85, 30, 0.7, 0.65, null, t); this.burst(0.3, 0.4, 'lowpass', 1400, 120, 0.7, null, t); this.tone('sine', 3100, 3050, 2.2, 0.035, null, t + 0.1, 0.4); }
   revived() { if (!this.ctx) return; const t = this.now; for (let i = 0; i < 4; i++) this.tone('sine', 440 * Math.pow(1.26, i), 440 * Math.pow(1.26, i), 0.14, 0.1, null, t + i * 0.09); }
   reviveTick(p) { if (this.ctx) this.tone('sine', 300 + p * 500, 300 + p * 500, 0.05, 0.05); }
   win() { if (!this.ctx) return; const t = this.now; [392, 494, 587, 784].forEach((f, i) => this.tone('sine', f, f, 0.9, 0.1, null, t + i * 0.16, 0.05)); }
@@ -77,7 +80,7 @@ export class Sound {
     this.burst(0.05, g, 'bandpass', 2400, 900, 1.5, d, t);
     if (bang) { this.burst(0.5, 0.8, 'bandpass', 1500, 500, 2.5, d, t + 0.12); for (const f of [280, 470]) this.tone('sine', f, f * 0.9, 0.6, 0.35, d, t + 0.5); }
   }
-  beep(x, z, muffled) { if (!this.ctx) return; const d = this.at(x, z, 0.2, 5, muffled, 90), t = this.now; this.tone('square', 2100, 2100, 0.08, 0.3, d, t); this.tone('square', 2650, 2650, 0.08, 0.3, d, t + 0.11); }
+  beep(x, z, muffled) { if (!this.ctx) return; const d = this.at(x, z, 0.2, 7, muffled, 90), t = this.now; this.tone('square', 2100, 2100, 0.08, 0.5, d, t); this.tone('square', 2650, 2650, 0.08, 0.5, d, t + 0.11); }
   klaxon(x, z) { if (!this.ctx) return; const d = this.at(x, z, 3.5, 9, false, 120), t = this.now, f = this.ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 1300; f.connect(d); this.tone('sawtooth', 392, 392, 0.55, 0.5, f, t, 0.03); this.tone('sawtooth', 311, 311, 0.6, 0.5, f, t + 0.6, 0.03); }
   liftArrive(x, z) { if (!this.ctx) return; const d = this.at(x, z, 2, 9, false, 120), t = this.now; this.burst(3, 1.3, 'lowpass', 150, 70, 0.7, d, t, this.brown, 0.4); this.tone('sine', 1046, 1046, 1.6, 0.4, d, t + 2.6); this.tone('sine', 1568, 1568, 1.4, 0.2, d, t + 2.6); }
   creak() { if (!this.ctx) return; const a = Math.random() * 6.28, r = 14 + Math.random() * 20, l = this.ctx.listener, x = (l.positionX ? l.positionX.value : 0) + Math.cos(a) * r, z = (l.positionZ ? l.positionZ.value : 0) + Math.sin(a) * r, d = this.at(x, z, 3, 8, true), t = this.now;
@@ -91,7 +94,7 @@ export class Sound {
   }
   voice(kind, x, z, muffled) {
     if (!this.ctx) return; const t = this.now;
-    if (kind === 'alert') { const d = this.at(x, z, 2.2, 4, muffled); let tt = t, gap = 0.085; for (let i = 0; i < 9; i++) { const f = 1500 + i * 150; this.burst(0.018, 0.5, 'bandpass', f, f, 10, d, tt, null, 0.001); this.tone('sine', f, f * 0.9, 0.03, 0.14, d, tt, 0.001); tt += gap; gap *= 0.86; } }
+    if (kind === 'alert') { const d = this.at(x, z, 2.2, 4, muffled); let tt = t, gap = 0.085; for (let i = 0; i < 9; i++) { const f = 1500 + i * 150; this.burst(0.02, 1.3, 'bandpass', f, f, 8, d, tt, null, 0.001); this.tone('sine', f, f * 0.9, 0.035, 0.4, d, tt, 0.001); tt += gap; gap *= 0.86; } }
     else if (kind === 'screech') {
       const d = this.at(x, z, 2.2, 7, muffled, 120), sh = this.ctx.createWaveShaper(); sh.curve = this.curve; const bp = this.ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1700; bp.Q.value = 1.1; sh.connect(bp).connect(d);
       for (const det of [1, 1.013, 1.51]) { const c = this.ctx, o = c.createOscillator(), g = c.createGain(); o.type = 'sawtooth'; o.frequency.setValueAtTime(480 * det, t); o.frequency.exponentialRampToValueAtTime(1500 * det, t + 0.22); o.frequency.exponentialRampToValueAtTime(900 * det, t + 0.7); o.frequency.exponentialRampToValueAtTime(380 * det, t + 1.15);
@@ -109,9 +112,9 @@ export class Sound {
     if (!this.ctx) return; this.t += dt; const t = this.now;
     this.staticLevel += (o.static - this.staticLevel) * Math.min(1, dt * 5);
     const s = this.staticLevel, crackle = Math.random() < 0.3 ? 0.6 + Math.random() * 0.8 : 1;
-    this.staticGain.gain.setTargetAtTime(s * s * 0.22 * crackle, t, 0.03);
-    this.genGain.gain.setTargetAtTime(o.gen * 0.16, t, 0.3);
-    if (o.danger > 0.35) { this.beatT -= dt; if (this.beatT <= 0) { this.beatT = 60 / (72 + 70 * o.danger); const g = 0.25 + 0.5 * o.danger; this.tone('sine', 62, 38, 0.13, g, null, t, 0.01); this.tone('sine', 52, 34, 0.12, g * 0.7, null, t + 0.16, 0.01); } }
+    this.staticGain.gain.setTargetAtTime(s * s * 0.11 * crackle, t, 0.03);
+    this.genGain.gain.setTargetAtTime(o.gen * 0.26, t, 0.3);
+    if (o.danger > 0.35) { this.beatT -= dt; if (this.beatT <= 0) { this.beatT = 60 / (72 + 70 * o.danger); const g = 0.14 + 0.3 * o.danger; this.tone('sine', 62, 38, 0.13, g, null, t, 0.01); this.tone('sine', 52, 34, 0.12, g * 0.7, null, t + 0.16, 0.01); } }
     if (o.winded > 0.3) { this.breathT -= dt; if (this.breathT <= 0) { this.breathT = 0.75 - 0.25 * o.winded; const g = 0.05 + 0.1 * o.winded; this.burst(0.3, g, 'bandpass', 900, 1500, 1.4, null, t, null, 0.1); this.burst(0.3, g * 0.8, 'bandpass', 1300, 700, 1.4, null, t + 0.36, null, 0.08); } }
     this.creakT -= dt; if (this.creakT <= 0) { this.creakT = 9 + Math.random() * 18; this.creak(); }
   }

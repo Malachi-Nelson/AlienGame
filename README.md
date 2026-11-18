@@ -84,8 +84,9 @@ relays, none of which are in `package.json`:
 
 ```sh
 npm i --no-save playwright-core aedes ws
-node tools/check-solo.mjs     # one player: walking, doors, a tag, a locker, meeting the creature
+node tools/check-solo.mjs     # one player: walking, doors, a tag, a locker, meeting the creature, the lift
 node tools/check-coop.mjs     # three players: lobby, a match, going down, the leader leaving mid-match
+node tools/check-audio.mjs    # renders every sound offline and prints how loud each one comes out
 ```
 
 ## How the page gets published

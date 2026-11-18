@@ -104,7 +104,7 @@ export class Session {
   quit() { this.world = null; this.gid = null; this.hostId = null; this.lastSnap = null; this.paused = false; }
   leave() { const was = this.mode; this.quit(); this.mode = 'menu'; this.rep = new Replica(this.L); if (was !== 'solo' && this.relay) { this.sendT = 0; this.publish(); } }
   // Ask the host for something: 'T' take tag, 'I' take sounder, 'D' door, 'G' throw, 'L' call the lift. It is repeated until answered.
-  act(type, ...args) { this.acts.push([++this.actSeq, type, ...args]); if (this.acts.length > 12) this.acts.shift(); }
+  act(type, ...args) { this.acts.push([++this.actSeq, type, ...args]); if (this.acts.length > 12) this.acts.shift(); if (this.mode === 'client') this.sendT = 0; }     // ask now, not at the next report
   // The crew in this room that someone could join right now.
   joinable() { let best = null; for (const [gid, g] of this.games) if (g.n < CFG.MAX_PLAYERS && (!best || g.t > best.t)) best = Object.assign({ gid }, g); return best; }
 
@@ -153,7 +153,9 @@ export class Session {
       if (this.mode === 'host' && this.world) {
         if (d.g === this.gid) {
           if (!this.world.players.has(id) && !this.world.addPlayer(id, d.n)) return;        // full
+          const wp = this.world.players.get(id), ack0 = wp.ack;
           this.world.input(id, { x: d.x / 100, z: d.z / 100, yaw: d.y / 1000, pitch: (d.p || 0) / 1000, f: d.f | 0, lk: d.lk, rv: d.rv, acts: d.a, name: d.n, rd: !!d.rd });
+          if (wp.ack !== ack0) this.sendT = Math.min(this.sendT, 0.02);          // they asked for something: answer straight away
         } else if (this.world.players.has(id)) this.world.removePlayer(id);                  // they went back to the menu
       }
       return;
