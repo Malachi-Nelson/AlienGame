@@ -35,7 +35,8 @@ export class Sound {
   }
   // A place in the world to play something from. muffled: there is a wall in the way.
   at(x, z, y = 1.5, ref = 3, muffled = false, max = 60) {
-    const p = this.ctx.createPanner(); p.panningModel = this.cheap ? 'equalpower' : 'HRTF';      // full 3D panning costs too much on a phone when many taps overlap p.distanceModel = 'inverse'; p.refDistance = ref; p.maxDistance = max; p.rolloffFactor = 1.35;
+    const p = this.ctx.createPanner(); p.panningModel = this.cheap ? 'equalpower' : 'HRTF';      // full 3D panning costs too much on a phone when many taps overlap
+    p.distanceModel = 'inverse'; p.refDistance = ref; p.maxDistance = max; p.rolloffFactor = 1.35;
     if (p.positionX) { p.positionX.value = x; p.positionY.value = y; p.positionZ.value = z; } else p.setPosition(x, y, z);
     if (!muffled) { p.connect(this.master); return p; }
     const f = this.ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 650; const g = this.ctx.createGain(); g.gain.value = 0.6; f.connect(g).connect(p).connect(this.master); return f;
